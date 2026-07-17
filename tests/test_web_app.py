@@ -1,4 +1,6 @@
 import base64
+from io import BytesIO
+import json
 import os
 import sys
 import unittest
@@ -11,6 +13,7 @@ from plotly.graph_objects import Figure
 
 from examples.generic import GenericExampleWorkspace
 from examples.sigmf import _read_recording
+from workspace_browser.plugin import AnalysisWorkspace, DirectorySource
 from workspace_browser.web.application import (
     WorkspaceBrowserApp,
     WorkspaceModuleRegistration,
@@ -42,6 +45,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("status", payload["page"])
         self.assertIn("summary", payload["page"]["views"])
         self.assertEqual("markdown", payload["page"]["rendered_views"][0]["kind"])
+        self.assertFalse(payload["page"]["logging"]["enabled"])
 
     def test_discovery_payload_does_not_assign_item_status(self):
         app = self.create_example_app()
@@ -76,6 +80,51 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(3, len(page["controls"]))
         playback = page["rendered_views"][0]["value"]
         self.assertEqual(256, len(playback["data"][0]["x"]))
+
+    def test_seekable_file_item_writes_progress_log_beside_data(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "capture.dat"
+            source.write_text("samples", encoding="utf-8")
+
+            def analyze(data, ui):
+                ui.playback(mode="seek", duration=3.0, step=0.25)
+                gain = ui.number("gain", default=1.0, step=0.1)
+                with ui.tab("Signal"):
+                    ui.text(f"Gain {gain}", key="signal")
+
+            workspace = AnalysisWorkspace(
+                identifier="log-test",
+                name="Log test",
+                description="Progress log test",
+                source=DirectorySource(root, pattern="*.dat", loader=lambda path: path.read_text(encoding="utf-8")),
+                analyze=analyze,
+            )
+            app = WorkspaceBrowserApp()
+            app.register_workspace(workspace)
+            opened = app.open_item("log-test", "capture.dat", {"gain": "2", "__playback_time_seconds": "1.25"})
+            self.assertTrue(opened["page"]["logging"]["enabled"])
+
+            result = app.write_item_log(
+                "log-test",
+                "capture.dat",
+                {"gain": "2", "__playback_time_seconds": "1.25", "__playback_follow_live": "false"},
+                {"active_tab": "Signal", "view_selections": {"domain": "Frequency"}},
+            )
+            target = root / "logs" / result["filename"]
+            self.assertTrue(target.is_file())
+            self.assertIn("-t1.25s-", target.name)
+            note = target.read_text(encoding="utf-8")
+            self.assertIn("Playback mode: seek", note)
+            self.assertIn("Playback position: 1.25 s", note)
+            self.assertIn("Active tab: Signal", note)
+            self.assertIn('"domain": "Frequency"', note)
+            self.assertIn('"gain": "2"', note)
+            reopened = app.open_item("log-test", "capture.dat", {"__playback_time_seconds": "0"})
+            self.assertEqual(
+                [{"filename": result["filename"], "position_seconds": 1.25}],
+                reopened["page"]["logging"]["entries"],
+            )
 
     def test_file_backed_sigmf_viewer_reads_recording(self):
         app = self.create_example_app()
@@ -215,9 +264,21 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="header-details"', body)
         self.assertIn('id="header-download"', body)
         self.assertIn('id="header-camera"', body)
+        self.assertIn('id="header-log"', body)
+        self.assertLess(body.index('id="header-log"'), body.index('id="header-camera"'))
+        self.assertIn('class="sidebar-toggle icon-button"', body)
+        self.assertIn('<circle cx="12" cy="13" r="3.25"/>', body)
+        self.assertNotIn("📷", body)
         self.assertIn("/exports?", body)
         self.assertIn("runExport('mat'", body)
         self.assertIn("runExport('png'", body)
+        self.assertIn("p.logging?.enabled", body)
+        self.assertIn("apiPost(`/workspaces/", body)
+        self.assertIn('id="log-markers"', body)
+        self.assertIn('class="log-marker"', body)
+        self.assertIn("activePlaybackSeek?.(marker.dataset.logPosition)", body)
+        self.assertIn("progressLogs.push(result)", body)
+        self.assertIn("button.innerHTML=original", body)
         self.assertIn("requestFullscreen()", body)
         self.assertIn("fullscreenchange", body)
         self.assertIn("catalog()", body)
@@ -274,6 +335,32 @@ class WebAppTests(unittest.TestCase):
         handler.do_GET()
         javascript = handler._write_javascript.call_args.args[0]
         self.assertIn("plotly.js", javascript)
+
+    def test_progress_log_endpoint_routes_json_context(self):
+        app = Mock()
+        app.write_item_log.return_value = {"filename": "capture-t1.25s-note.txt"}
+        handler_type = _make_handler(app)
+        handler = handler_type.__new__(handler_type)
+        payload = json.dumps(
+            {
+                "control_values": {"gain": "2", "__playback_time_seconds": "1.25"},
+                "active_tab": "Signal",
+                "view_selections": {"domain": "Frequency"},
+            }
+        ).encode("utf-8")
+        handler.path = "/workspaces/log-test/items/capture.dat/logs"
+        handler.headers = {"Content-Length": str(len(payload))}
+        handler.rfile = BytesIO(payload)
+        handler._write_json = Mock()
+        handler.do_POST()
+
+        app.write_item_log.assert_called_once_with(
+            "log-test",
+            "capture.dat",
+            {"gain": "2", "__playback_time_seconds": "1.25"},
+            {"active_tab": "Signal", "view_selections": {"domain": "Frequency"}},
+        )
+        handler._write_json.assert_called_once_with(201, {"filename": "capture-t1.25s-note.txt"})
 
     def test_mat_export_runs_as_a_background_job(self):
         app = self.create_example_app()
