@@ -118,7 +118,7 @@ class GenericExampleWorkspace:
             ),
             views=time_views + frequency_views,
             layout=container("tabs", (time_grid, frequency_grid)),
-            playback=PlaybackConfiguration(enabled=True, duration_seconds=5.6, step_seconds=0.35, loop=True),
+            playback=PlaybackConfiguration(mode="seek", duration_seconds=5.6, step_seconds=0.35, loop=True),
             metadata={
                 "global": {"core:datatype": "rf32_le", "core:sample_rate": sample_rate, "core:num_channels": 4, "core:version": "1.2.5"},
                 "captures": [{"core:sample_start": 0, "core:frequency": 915_000_000}],

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import importlib
 import inspect
 import json
+import shutil
 import sys
+from tempfile import mkdtemp
 import time
+from uuid import uuid4
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +24,8 @@ from workspace_browser.profile import WorkspaceLaunchSpec, load_browser_profile
 from workspace_browser.registry.registry import WorkspaceRegistry
 from workspace_browser.rendering import render_matplotlib_figure
 from workspace_browser.rendering.dispatch import RenderKind, detect_render_kind
+from workspace_browser.web.mat_export import write_mat_export
+from workspace_browser.web.png_export import write_png_bundle
 
 
 _PLOTLY_JS = get_plotlyjs()
@@ -47,26 +53,30 @@ _INDEX_HTML = r"""<!doctype html>
     .card:hover { border-color:#8eb9bf; box-shadow:0 4px 14px #17323c14 } .card h2 { font-size:17px; margin:4px 0 } .card p { margin:0 } .card-tags { text-align:right; min-width:130px }
     .muted { color:var(--muted) } .tag { display:inline-block; border-radius:999px; padding:3px 9px; margin:2px 4px 2px 0; font-size:12px; background:#e8f3f3; color:#17626a }
     .data-toolbar { position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:10px; min-height:46px; margin:0 -12px 4px; padding:6px 16px; background:#fbfcfcf2; border-bottom:1px solid var(--line); backdrop-filter:blur(8px) } .data-toolbar-spacer { flex:1 }
-    .playback-bar { display:flex; align-items:center; gap:10px; flex:1; min-width:240px } .playback-bar .primary { padding:6px 10px; min-width:72px } .playback-bar input { flex:1; min-height:0; padding:0 } .playback-bar #counter { width:112px; text-align:right; color:var(--muted); font:12px ui-monospace,monospace }
-    .sidebar-toggle,.sidebar-close { border:1px solid var(--line); border-radius:6px; padding:5px 10px; background:white; color:var(--muted); font:600 12px inherit; cursor:pointer } .workspace-sidebar { position:fixed; z-index:40; top:52px; right:0; bottom:0; display:flex; flex-direction:column; width:min(420px,calc(100vw - 20px)); padding:18px; overflow-y:auto; overflow-x:hidden; background:#fbfcfc; border-left:1px solid var(--line); box-shadow:-10px 0 30px #17323c1c; transform:translateX(102%); transition:transform .18s ease } .workspace-sidebar * { min-width:0 } .workspace-sidebar .table-wrap { overflow:visible; padding:8px 0 } .workspace-sidebar .data-table th,.workspace-sidebar .data-table td { white-space:normal; overflow-wrap:anywhere } .workspace-sidebar.open { transform:translateX(0) } .sidebar-backdrop { position:fixed; z-index:35; inset:52px 0 0; border:0; background:#102f3a24; opacity:0; pointer-events:none; transition:opacity .18s ease } .sidebar-backdrop.open { opacity:1; pointer-events:auto } .sidebar-head { display:flex; align-items:start; gap:12px; padding-bottom:16px; border-bottom:1px solid var(--line) } .sidebar-head .crumb { margin:0 0 7px; font-size:12px } .sidebar-title { min-width:0; flex:1 } .sidebar-title h1 { margin:0; font-size:20px; line-height:1.25 } .sidebar-title .subtitle { display:block; margin-top:4px; color:var(--muted); font-size:13px } .sidebar-close { flex:none; padding:4px 8px } .analysis-panel { display:flex; flex-direction:column; gap:16px; padding-top:16px } .analysis-panel h2 { margin:0; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em } .control-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px } .control-fields:empty { display:none } .control-fields label { display:flex; flex-direction:column; gap:3px; color:var(--muted); font-size:11px } .control-fields select,.control-fields input { min-height:34px; padding:5px 8px; color:var(--ink) } .control-fields select { padding-right:26px } .control-fields input[type=number] { width:100% } .view-stats { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:7px 12px; margin:0; font-size:12px } .view-stats div { display:contents } .view-stats dt { color:var(--muted) } .view-stats dd { margin:0; text-align:right; color:var(--ink); font:12px ui-monospace,monospace; overflow-wrap:anywhere; white-space:normal }
+    .playback-bar { display:flex; align-items:center; gap:10px; flex:1; min-width:240px } .playback-bar .primary { padding:6px 10px; min-width:72px } .playback-bar input[type=range] { flex:1; min-height:0; padding:0 } .playback-bar #current-time { flex:none; width:98px; min-height:30px; padding:4px 7px; text-align:right; font:12px ui-monospace,monospace } .playback-bar #counter { width:82px; color:var(--muted); font:12px ui-monospace,monospace; white-space:nowrap }
+    .sidebar-toggle,.sidebar-close { border:1px solid var(--line); border-radius:6px; padding:5px 10px; background:white; color:var(--muted); font:600 12px inherit; cursor:pointer } .sidebar-toggle.has-view-parameters { color:var(--accent); border-color:var(--accent) } .workspace-sidebar { position:fixed; z-index:40; top:52px; right:0; bottom:0; display:flex; flex-direction:column; width:min(420px,calc(100vw - 20px)); padding:18px; overflow-y:auto; overflow-x:hidden; background:#fbfcfc; border-left:1px solid var(--line); box-shadow:-10px 0 30px #17323c1c; transform:translateX(102%); transition:transform .18s ease } .workspace-sidebar * { min-width:0 } .workspace-sidebar .table-wrap { overflow:visible; padding:8px 0 } .workspace-sidebar .data-table th,.workspace-sidebar .data-table td { white-space:normal; overflow-wrap:anywhere } .workspace-sidebar.open { transform:translateX(0) } .sidebar-backdrop { position:fixed; z-index:35; inset:52px 0 0; border:0; background:#102f3a24; opacity:0; pointer-events:none; transition:opacity .18s ease } .sidebar-backdrop.open { opacity:1; pointer-events:auto } .sidebar-head { display:flex; align-items:start; gap:12px; padding-bottom:16px; border-bottom:1px solid var(--line) } .sidebar-head .crumb { margin:0 0 7px; font-size:12px } .sidebar-title { min-width:0; flex:1 } .sidebar-title h1 { margin:0; font-size:20px; line-height:1.25 } .sidebar-title .subtitle { display:block; margin-top:4px; color:var(--muted); font-size:13px } .sidebar-close { flex:none; padding:4px 8px } .analysis-panel { display:flex; flex-direction:column; gap:16px; padding-top:16px } .analysis-panel h2 { margin:0; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em } .view-settings-empty { margin:8px 0 0; color:var(--muted); font-size:12px } .control-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px } .control-fields:empty { display:none } .control-fields label { display:flex; flex-direction:column; gap:3px; color:var(--muted); font-size:11px } .control-fields select,.control-fields input { min-height:34px; padding:5px 8px; color:var(--ink) } .control-fields select { padding-right:26px } .control-fields input[type=number] { width:100% } .view-stats { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:7px 12px; margin:0; font-size:12px } .view-stats div { display:contents } .view-stats dt { color:var(--muted) } .view-stats dd { margin:0; text-align:right; color:var(--ink); font:12px ui-monospace,monospace; overflow-wrap:anywhere; white-space:normal }
     .data-stage { height:400px; min-height:0; overflow:hidden } #active-view,.view { height:100%; min-height:0 } .layout-tabs { position:relative; display:flex; flex-direction:column; height:100%; min-height:0 } .layout-tab-panes { position:relative; flex:1; min-height:0 } .tabs { flex:none; display:flex; gap:4px; overflow-x:auto; border-bottom:1px solid var(--line); margin:0 0 4px; padding-left:4px } .tab { flex:none; border:0; border-bottom:3px solid transparent; background:none; padding:9px 13px 7px; color:var(--muted); font:600 13px inherit; cursor:pointer } .tab.active { color:var(--accent); border-color:var(--accent) } .layout-tab-pane { width:100%; height:100%; min-height:0 } .layout-tab-pane:not(.active) { position:absolute; inset:0; visibility:hidden; pointer-events:none }
-    .view h1 { font-size:20px } .view h2 { font-size:16px } .plotly-view { width:100%; height:100%; min-height:0 } .matplotlib-view { display:block; width:100%; height:100%; min-height:0; object-fit:contain; background:white } .playback-grid { display:grid; width:100%; height:100%; min-height:0; grid-template-columns:var(--grid-template,repeat(2,minmax(0,1fr))); grid-template-rows:var(--grid-rows,minmax(0,1fr)); gap:4px } .playback-grid.single-plot { display:block; height:100% } .single-plot .channel { width:100%; height:100%; border:0 } .view-switcher { position:relative; display:flex; flex-direction:column; height:100%; min-height:0 } .view-pane { width:100%; flex:1; min-height:0 } .view-pane:not(.active) { position:absolute; inset:40px 0 0; visibility:hidden; pointer-events:none } .view-switcher-head { position:relative; z-index:2; flex:none; height:40px; display:flex; align-items:center; gap:10px; padding:4px 8px; border-bottom:1px solid var(--line); background:white } .view-switcher-label { color:var(--muted); font-size:12px; font-weight:600 } .view-choice { border:1px solid var(--line); border-radius:5px; background:white; padding:4px 9px; color:var(--muted); font:12px inherit; cursor:pointer } .view-choice.active { border-color:var(--accent); background:#e8f3f3; color:#17626a } .view-switcher-select { min-height:30px; min-width:150px; padding:4px 28px 4px 8px; border:1px solid var(--line); border-radius:5px; background:white; color:var(--ink); font:12px inherit } .channel { min-width:0; min-height:0; height:100%; overflow:hidden; border-right:1px solid var(--line); border-bottom:1px solid var(--line); background:white } .channel:nth-child(2n) { border-right:0 } .layout-column { display:flex; flex-direction:column; gap:8px; height:100%; min-height:0; overflow:auto } .layout-column > .plotly-view,.layout-column > .matplotlib-view { flex:1 } .layout-row { display:flex; gap:8px; height:100%; min-height:0 } .layout-panel { height:100%; min-height:0; overflow:auto; padding:12px; border:1px solid var(--line); border-radius:7px } .prose,.text-view { padding:16px; color:var(--ink) } .prose h1,.prose h2,.prose h3 { margin:0 0 8px } .table-wrap { overflow:auto; padding:8px } .data-table { width:100%; border-collapse:collapse; font-size:12px } .data-table th { position:sticky; top:0; background:var(--wash); color:var(--muted); text-align:left } .data-table th,.data-table td { padding:7px 9px; border-bottom:1px solid var(--line); white-space:nowrap } .empty,.error { padding:36px; text-align:center; color:var(--muted); border:1px dashed #bac9cd; border-radius:10px }
+    .view h1 { font-size:20px } .view h2 { font-size:16px } .plotly-view { width:100%; height:100%; min-height:0 } .matplotlib-view { display:block; width:100%; height:100%; min-height:0; object-fit:contain; background:white } .playback-grid { display:grid; width:100%; height:100%; min-height:0; grid-template-columns:var(--grid-template,repeat(2,minmax(0,1fr))); grid-template-rows:var(--grid-rows,minmax(0,1fr)); gap:4px } .playback-grid.single-plot { display:block; height:100% } .single-plot .channel { width:100%; height:100%; border:0 } .view-switcher { position:relative; display:flex; flex-direction:column; height:100%; min-height:0 } .view-pane { width:100%; flex:1; min-height:0 } .view-pane:not(.active) { position:absolute; inset:40px 0 0; visibility:hidden; pointer-events:none } .view-switcher-head { position:relative; z-index:2; flex:none; height:40px; display:flex; align-items:center; gap:10px; padding:4px 8px; border-bottom:1px solid var(--line); background:white } .view-switcher-label { color:var(--muted); font-size:12px; font-weight:600 } .view-choice { border:1px solid var(--line); border-radius:5px; background:white; padding:4px 9px; color:var(--muted); font:12px inherit; cursor:pointer } .view-choice.active { border-color:var(--accent); background:#e8f3f3; color:#17626a } .view-switcher-select { min-height:30px; min-width:150px; padding:4px 28px 4px 8px; border:1px solid var(--line); border-radius:5px; background:white; color:var(--ink); font:12px inherit } .parameter-group { flex:none; display:grid; grid-template-columns:repeat(var(--parameter-columns,1),minmax(0,1fr)); gap:9px 12px; padding:10px 12px; border:1px solid var(--line); border-radius:7px; background:var(--wash) } .parameter-group-title { grid-column:1/-1; color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase } .parameter-control { display:flex; flex-direction:column; gap:3px; min-width:0; color:var(--muted); font-size:11px } .parameter-control input,.parameter-control select { width:100%; min-height:34px; padding:5px 8px; color:var(--ink) } .channel { min-width:0; min-height:0; height:100%; overflow:hidden; border-right:1px solid var(--line); border-bottom:1px solid var(--line); background:white } .channel:nth-child(2n) { border-right:0 } .layout-column { display:flex; flex-direction:column; gap:8px; height:100%; min-height:0; overflow:auto } .layout-column > .plotly-view,.layout-column > .matplotlib-view { flex:1 } .layout-row { display:flex; gap:8px; height:100%; min-height:0 } .layout-panel { height:100%; min-height:0; overflow:auto; padding:12px; border:1px solid var(--line); border-radius:7px } .prose,.text-view { padding:16px; color:var(--ink) } .prose h1,.prose h2,.prose h3 { margin:0 0 8px } .table-wrap { overflow:auto; padding:8px } .data-table { width:100%; border-collapse:collapse; font-size:12px } .data-table th { position:sticky; top:0; background:var(--wash); color:var(--muted); text-align:left } .data-table th,.data-table td { padding:7px 9px; border-bottom:1px solid var(--line); white-space:nowrap } .empty,.error { padding:36px; text-align:center; color:var(--muted); border:1px dashed #bac9cd; border-radius:10px }
     .error { color:#8c2e2e; background:#fff7f7 } @media(max-width:700px){header{padding:0 14px}header span{display:none}main{margin-top:20px}main.item-page{width:calc(100% - 12px);margin-top:6px}.toolbar{flex-wrap:wrap}.playback-grid{grid-template-columns:1fr;grid-template-rows:repeat(var(--grid-items),minmax(0,1fr))}.channel{border-right:0}.card{grid-template-columns:1fr}.card-tags{text-align:left}.data-toolbar{flex-wrap:wrap}.workspace-sidebar{width:calc(100vw - 12px);top:52px}.sidebar-backdrop{inset:52px 0 0}.control-fields{grid-template-columns:1fr}}
+    .layout-column > .view-switcher { flex:1 }
+    .live-toggle { border:1px solid var(--line); border-radius:6px; padding:5px 9px; background:white; color:var(--muted); font:600 12px inherit; cursor:pointer } .live-toggle.active { border-color:#b42318; color:#b42318; background:#fff1f0 } html[data-theme="dark"] .live-toggle { background:#193741; color:var(--muted) } html[data-theme="dark"] .live-toggle.active { border-color:#ff7b72; color:#ff9b94; background:#4a2020 }
   </style>
 </head>
-<body><header><button class="home-title" id="app-home">Scientific Workspace Browser</button><span>Explore scientific and analytical results</span><span class="header-spacer"></span><select id="theme-toggle" aria-label="Color theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><button class="sidebar-toggle" id="header-details" data-sidebar-toggle aria-expanded="false" hidden>Details</button><button class="fullscreen-toggle" id="fullscreen-toggle" aria-label="Enter fullscreen" aria-pressed="false">⛶</button></header><main id="app"><div class="empty">Loading workspaces…</div></main>
+<body><header><button class="home-title" id="app-home">Scientific Workspace Browser</button><span>Explore scientific and analytical results</span><span class="header-spacer"></span><select id="theme-toggle" aria-label="Color theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><button class="sidebar-toggle" id="header-camera" aria-label="Export all plots as PNG files" title="Export all plots as PNG files" hidden>📷</button><button class="sidebar-toggle" id="header-download" hidden>Download .mat</button><button class="sidebar-toggle" id="header-details" data-sidebar-toggle aria-expanded="false" hidden>Details</button><button class="fullscreen-toggle" id="fullscreen-toggle" aria-label="Enter fullscreen" aria-pressed="false">⛶</button></header><main id="app"><div class="empty">Loading workspaces…</div></main>
 <script src="/assets/plotly.min.js"></script>
 <script>
 const app=document.querySelector('#app');
 const appHome=document.querySelector('#app-home');
 const headerDetails=document.querySelector('#header-details');
+const headerDownload=document.querySelector('#header-download');
+const headerCamera=document.querySelector('#header-camera');
 const fullscreenToggle=document.querySelector('#fullscreen-toggle');
 const themeToggle=document.querySelector('#theme-toggle');let themePreference=localStorage.getItem('workspace-browser-theme')||'system';
 function resolvedTheme(){return themePreference==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):themePreference}function applyTheme(){document.documentElement.dataset.theme=resolvedTheme();themeToggle.value=themePreference}applyTheme();themeToggle.onchange=()=>{themePreference=themeToggle.value;localStorage.setItem('workspace-browser-theme',themePreference);applyTheme();boot()};matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if(themePreference==='system'){applyTheme();boot()}});
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api=async path=>{const r=await fetch(path);if(!r.ok)throw new Error((await r.json()).detail||`Request failed (${r.status})`);return r.json()};
 const fail=e=>app.innerHTML=`<div class="error"><b>Unable to load this page</b><br>${esc(e.message)}</div>`;
-let playbackTimer=null,playbackPosition=0,playbackPaused=false,plotResizeObserver=null,dataStageResizeFrame=null;
+let playbackTimer=null,playbackPosition=0,playbackPaused=false,playbackFollowLive=false,plotResizeObserver=null,dataStageResizeFrame=null;
 const viewSelections={};
 function markdown(value){return esc(value).replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>').replace(/\n/g,'<br>')}
 function plotlyFigure(figure,viewName){const id=`plotly-${encodeURIComponent(viewName)}`;return `<div id="${id}" class="plotly-view" data-plot-view="${esc(viewName)}"></div>`}
@@ -85,29 +95,44 @@ fullscreenToggle.onclick=async()=>{try{if(document.fullscreenElement)await docum
 document.addEventListener('fullscreenchange',syncFullscreenToggle);
 function tableRows(value){if(Array.isArray(value))return value;if(!value||typeof value!=='object')return[];const columns=Object.keys(value),indices=[...new Set(columns.flatMap(column=>Object.keys(value[column]||{})))];return indices.map(index=>Object.fromEntries(columns.map(column=>[column,value[column]?.[index]])))}
 function tableHtml(value){const rows=tableRows(value);if(!rows.length)return '<div class="empty">No rows</div>';const columns=[...new Set(rows.flatMap(row=>Object.keys(row)))];return `<div class="table-wrap"><table class="data-table"><thead><tr>${columns.map(column=>`<th>${esc(column)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${columns.map(column=>`<td>${esc(statText(row[column]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
-function renderView(v){if(v.kind==='plotly')return plotlyFigure(v.value,v.name);if(v.kind==='matplotlib')return matplotlibFigure(v.value,v.name);if(v.kind==='markdown')return `<article class="prose">${markdown(v.value)}</article>`;if(v.kind==='text')return `<div class="text-view">${esc(v.value)}</div>`;if(v.kind==='table'||v.kind==='dataframe')return tableHtml(v.value);return `<pre>${esc(typeof v.value==='string'?v.value:JSON.stringify(v.value,null,2))}</pre>`}
+function renderValue(v){if(v.kind==='markdown')return `<article class="prose">${markdown(v.value)}</article>`;if(v.kind==='text')return `<div class="text-view">${esc(v.value)}</div>`;if(v.kind==='table'||v.kind==='dataframe')return tableHtml(v.value);return `<pre>${esc(typeof v.value==='string'?v.value:JSON.stringify(v.value,null,2))}</pre>`}
+function renderView(v){if(v.kind==='plotly')return plotlyFigure(v.value,v.name);if(v.kind==='matplotlib')return matplotlibFigure(v.value,v.name);return `<div data-render-view="${esc(v.name)}">${renderValue(v)}</div>`}
+function updateGenericViews(views){document.querySelectorAll('[data-render-view]').forEach(target=>{const view=views.find(candidate=>candidate.name===target.dataset.renderView);if(view&&view.kind!=='plotly'&&view.kind!=='matplotlib')target.innerHTML=renderValue(view)})}
 function gridTemplate(columns){if(Array.isArray(columns))return columns.map(weight=>`minmax(0,${Number(weight)||1}fr)`).join(' ');const count=Math.max(1,Number(columns)||1);return `repeat(${count},minmax(0,1fr))`}
-function renderLayout(node,views){if(node.kind==='view_slot'){const view=views.find(v=>v.name===node.view);return view?renderView(view):''}if(node.kind==='tabs'){const labels=node.children.map((child,i)=>child.props.label||`Tab ${i+1}`);return `<div class="layout-tabs" data-layout-tabs><nav class="tabs">${labels.map((label,i)=>`<button class="tab ${i===0?'active':''}" data-layout-tab="${i}">${esc(label)}</button>`).join('')}</nav><div class="layout-tab-panes">${node.children.map((child,i)=>`<div class="layout-tab-pane ${i===0?'active':''}" data-layout-pane="${i}" aria-hidden="${i!==0}">${renderLayout(child,views)}</div>`).join('')}</div></div>`}if(node.kind==='view_switcher'){const key=String(node.props.key),selected=viewSelections[key]||0,labels=node.children.map((child,i)=>child.props.label||`View ${i+1}`),selector=node.props.selector||'buttons',control=selector==='dropdown'?`<select class="view-switcher-select" data-view-select>${labels.map((label,i)=>`<option value="${i}" ${i===selected?'selected':''}>${esc(label)}</option>`).join('')}</select>`:labels.map((label,i)=>`<button class="view-choice ${i===selected?'active':''}" data-view-choice="${i}">${esc(label)}</button>`).join('');return `<div class="view-switcher" data-view-switcher="${esc(key)}"><div class="view-switcher-head"><span class="view-switcher-label">${esc(node.props.label||'View')}</span>${control}</div>${node.children.map((child,i)=>`<div class="view-pane ${i===selected?'active':''}" data-view-pane="${i}" aria-hidden="${i!==selected}">${renderLayout(child,views)}</div>`).join('')}</div>`}const children=node.children.map(child=>renderLayout(child,views)).join('');if(node.kind==='grid'){const columnCount=Array.isArray(node.props.columns)?node.props.columns.length:Number(node.props.columns)||1,rowCount=Math.ceil(node.children.length/columnCount);return `<div class="playback-grid ${node.children.length===1?'single-plot':''}" style="--grid-template:${gridTemplate(node.props.columns)};--grid-rows:repeat(${rowCount},minmax(0,1fr));--grid-items:${node.children.length}">${node.children.map(child=>`<div class="channel">${renderLayout(child,views)}</div>`).join('')}</div>`}if(node.kind==='column'||node.kind==='stack')return `<div class="layout-column">${children}</div>`;if(node.kind==='row')return `<div class="layout-row">${children}</div>`;if(node.kind==='panel')return `<div class="layout-panel">${children}</div>`;return children}
+function renderLayout(node,views,controls,values){if(node.kind==='view_slot'){const view=views.find(v=>v.name===node.view);return view?renderView(view):''}if(node.kind==='control_slot'){const control=controls.find(candidate=>candidate.name===node.props.name);return control?`<label class="parameter-control">${esc(control.label||controlLabel(control.name))}${controlHtml(control,values)}</label>`:''}if(node.kind==='tabs'){const labels=node.children.map((child,i)=>child.props.label||`Tab ${i+1}`);return `<div class="layout-tabs" data-layout-tabs><nav class="tabs">${labels.map((label,i)=>`<button class="tab ${i===0?'active':''}" data-layout-tab="${i}">${esc(label)}</button>`).join('')}</nav><div class="layout-tab-panes">${node.children.map((child,i)=>`<div class="layout-tab-pane ${i===0?'active':''}" data-layout-pane="${i}" aria-hidden="${i!==0}">${renderLayout(child,views,controls,values)}</div>`).join('')}</div></div>`}if(node.kind==='view_switcher'){const key=String(node.props.key),selected=viewSelections[key]||0,labels=node.children.map((child,i)=>child.props.label||`View ${i+1}`),selector=node.props.selector||'buttons',control=selector==='dropdown'?`<select class="view-switcher-select" data-view-select>${labels.map((label,i)=>`<option value="${i}" ${i===selected?'selected':''}>${esc(label)}</option>`).join('')}</select>`:labels.map((label,i)=>`<button class="view-choice ${i===selected?'active':''}" data-view-choice="${i}">${esc(label)}</button>`).join('');return `<div class="view-switcher" data-view-switcher="${esc(key)}"><div class="view-switcher-head"><span class="view-switcher-label">${esc(node.props.label||'View')}</span>${control}</div>${node.children.map((child,i)=>`<div class="view-pane ${i===selected?'active':''}" data-view-pane="${i}" data-view-label="${esc(labels[i])}" aria-hidden="${i!==selected}">${renderLayout(child,views,controls,values)}</div>`).join('')}</div>`}const children=node.children.map(child=>renderLayout(child,views,controls,values)).join('');if(node.kind==='control_group')return `<div class="parameter-group" style="--parameter-columns:${Number(node.props.columns)||1}">${node.props.label?`<div class="parameter-group-title">${esc(node.props.label)}</div>`:''}${children}</div>`;if(node.kind==='grid'){const columnCount=Array.isArray(node.props.columns)?node.props.columns.length:Number(node.props.columns)||1,rowCount=Math.ceil(node.children.length/columnCount);return `<div class="playback-grid ${node.children.length===1?'single-plot':''}" style="--grid-template:${gridTemplate(node.props.columns)};--grid-rows:repeat(${rowCount},minmax(0,1fr));--grid-items:${node.children.length}">${node.children.map(child=>`<div class="channel">${renderLayout(child,views,controls,values)}</div>`).join('')}</div>`}if(node.kind==='column'||node.kind==='stack')return `<div class="layout-column">${children}</div>`;if(node.kind==='row')return `<div class="layout-row">${children}</div>`;if(node.kind==='panel')return `<div class="layout-panel">${children}</div>`;return children}
 function bindLayoutTabs(){document.querySelectorAll('[data-layout-tabs]').forEach(root=>{const buttons=root.querySelectorAll(':scope > .tabs > [data-layout-tab]'),panes=root.querySelectorAll(':scope > .layout-tab-panes > [data-layout-pane]');buttons.forEach(button=>button.onclick=()=>{const selected=Number(button.dataset.layoutTab);buttons.forEach((candidate,index)=>candidate.classList.toggle('active',index===selected));panes.forEach((pane,index)=>{pane.classList.toggle('active',index===selected);pane.setAttribute('aria-hidden',String(index!==selected))});requestAnimationFrame(resizePlots)})})}
-function bindViewSwitchers(){document.querySelectorAll('[data-view-switcher]').forEach(root=>{const activate=selected=>{viewSelections[root.dataset.viewSwitcher]=selected;root.querySelectorAll('[data-view-choice]').forEach((choice,index)=>choice.classList.toggle('active',index===selected));root.querySelectorAll('[data-view-pane]').forEach((pane,index)=>{pane.classList.toggle('active',index===selected);pane.setAttribute('aria-hidden',String(index!==selected))});const select=root.querySelector('[data-view-select]');if(select)select.value=selected};root.querySelectorAll('[data-view-choice]').forEach(button=>button.onclick=()=>activate(Number(button.dataset.viewChoice)));const select=root.querySelector('[data-view-select]');if(select)select.onchange=()=>activate(Number(select.value))})}
-function startFrameworkPlayback(config,refresh){const bar=document.querySelector('#playback-bar');if(!bar)return;clearInterval(playbackTimer);if(playbackPosition>config.duration_seconds)playbackPosition=0;let updating=false;const updateClock=()=>{bar.querySelector('#position').value=playbackPosition;bar.querySelector('#counter').textContent=`${playbackPosition.toFixed(2)} / ${config.duration_seconds.toFixed(2)} s`},update=async()=>{if(updating)return;updating=true;try{await refresh()}finally{updating=false}};bar.querySelector('#position').max=config.duration_seconds;bar.querySelector('#position').step=config.step_seconds;bar.querySelector('#position').oninput=async e=>{playbackPosition=Number(e.target.value);updateClock();await update()};bar.querySelector('#toggle').onclick=()=>{playbackPaused=!playbackPaused;bar.querySelector('#toggle').textContent=playbackPaused?'▶ Play':'❚❚ Pause'};updateClock();const interval=config.refresh_interval_seconds??config.step_seconds;playbackTimer=setInterval(async()=>{if(playbackPaused||updating)return;playbackPosition+=config.step_seconds;if(playbackPosition>config.duration_seconds)playbackPosition=config.loop?0:config.duration_seconds;updateClock();await update()},interval*1000)}
+function bindViewSwitchers(){document.querySelectorAll('.view-switcher[data-view-switcher]').forEach(root=>{const activate=selected=>{viewSelections[root.dataset.viewSwitcher]=selected;root.querySelectorAll('[data-view-choice]').forEach((choice,index)=>choice.classList.toggle('active',index===selected));root.querySelectorAll(':scope > [data-view-pane]').forEach((pane,index)=>{pane.classList.toggle('active',index===selected);pane.setAttribute('aria-hidden',String(index!==selected))});const select=root.querySelector('[data-view-select]');if(select)select.value=selected};root.querySelectorAll('[data-view-choice]').forEach(button=>button.onclick=()=>activate(Number(button.dataset.viewChoice)));const select=root.querySelector('[data-view-select]');if(select)select.onchange=()=>activate(Number(select.value))})}
+function startFrameworkPlayback(config,refresh){
+  const bar=document.querySelector('#playback-bar');if(!bar)return;clearInterval(playbackTimer);if(playbackPosition>config.duration_seconds)playbackPosition=0;
+  const slider=bar.querySelector('#position'),current=bar.querySelector('#current-time'),counter=bar.querySelector('#counter'),live=bar.querySelector('#jump-live');let updating=false;
+  const updateClock=()=>{slider.max=config.duration_seconds;current.max=config.duration_seconds;slider.value=playbackPosition;current.value=Number(playbackPosition.toFixed(9));counter.textContent=`/ ${config.duration_seconds.toFixed(3)} s`;live?.classList.toggle('active',playbackFollowLive)};
+  const update=async()=>{if(updating)return;updating=true;try{await refresh()}finally{updating=false}};
+  const seek=async value=>{const parsed=Number(value);if(!Number.isFinite(parsed)){updateClock();return}playbackFollowLive=false;playbackPosition=Math.min(config.duration_seconds,Math.max(0,parsed));updateClock();await update()};
+  slider.step=config.step_seconds;slider.oninput=e=>seek(e.target.value);
+  current.onchange=e=>seek(e.target.value);current.onkeydown=e=>{if(e.key==='Enter')e.currentTarget.blur()};
+  if(live)live.onclick=async()=>{playbackFollowLive=true;playbackPaused=false;bar.querySelector('#toggle').textContent='❚❚ Pause';await update();playbackPosition=config.duration_seconds;updateClock()};
+  bar.querySelector('#toggle').onclick=()=>{playbackPaused=!playbackPaused;bar.querySelector('#toggle').textContent=playbackPaused?'▶ Play':'❚❚ Pause'};
+  updateClock();const interval=config.refresh_interval_seconds??config.step_seconds;playbackTimer=setInterval(async()=>{if(playbackPaused||updating)return;if(playbackFollowLive){await update();playbackPosition=config.duration_seconds;updateClock();return}playbackPosition+=config.step_seconds;if(playbackPosition>config.duration_seconds)playbackPosition=config.loop?0:config.duration_seconds;updateClock();await update()},interval*1000)
+}
 function startFrameworkRefresh(config,refresh){let updating=false;playbackTimer=setInterval(async()=>{if(updating)return;updating=true;try{await refresh()}finally{updating=false}},config.interval_seconds*1000)}
 const controlLabel=name=>name.split('_').map(x=>x[0].toUpperCase()+x.slice(1)).join(' ');
 function controlHtml(control,values){const value=values[control.name]??control.default;if(control.control_type==='select')return `<select data-control="${esc(control.name)}">${control.options.map(option=>`<option value="${esc(option)}" ${String(value)===String(option)?'selected':''}>${esc(option)}</option>`).join('')}</select>`;if(control.control_type==='integer'||control.control_type==='float')return `<input type="number" data-control="${esc(control.name)}" value="${esc(value)}" ${control.minimum==null?'':`min="${esc(control.minimum)}"`} ${control.maximum==null?'':`max="${esc(control.maximum)}"`} ${control.step==null?'':`step="${esc(control.step)}"`}>`;return `<input data-control="${esc(control.name)}" value="${esc(value)}">`}
 const statText=value=>value!=null&&typeof value==='object'?JSON.stringify(value):String(value??'—');
 function statisticsRows(statistics){return Object.entries(statistics||{}).map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(statText(value))}</dd></div>`).join('')}
-function sidebarHtml(workspaceName,page){return `<button class="sidebar-backdrop" data-sidebar-backdrop aria-label="Close details"></button><aside class="workspace-sidebar" data-workspace-sidebar aria-label="Workspace details"><div class="sidebar-head"><div class="sidebar-title"><div class="crumb"><button id="home">Workspaces</button> / <button id="back">${esc(workspaceName)}</button></div><h1>${esc(page.title)}</h1><span class="subtitle">${esc(page.subtitle||'')}</span></div><button class="sidebar-close" data-sidebar-close aria-label="Close details">Close</button></div><div class="analysis-panel">${page.controls.length?`<section><h2>Analysis settings</h2><div class="control-fields">${page.controls.map(c=>`<label>${esc(controlLabel(c.name))}${controlHtml(c,page.control_values)}</label>`).join('')}</div></section>`:''}<section><h2>View details</h2><dl class="view-stats" id="view-stats">${statisticsRows(page.statistics)}<div><dt>Plotly render</dt><dd data-client-stat="plotly-runtime">—</dd></div></dl></section></div></aside>`}
+function sidebarHtml(workspaceName,page){const details=page.controls.filter(control=>control.placement!=='inline');return `<button class="sidebar-backdrop" data-sidebar-backdrop aria-label="Close details"></button><aside class="workspace-sidebar" data-workspace-sidebar aria-label="Workspace details"><div class="sidebar-head"><div class="sidebar-title"><div class="crumb"><button id="home">Workspaces</button> / <button id="back">${esc(workspaceName)}</button></div><h1>${esc(page.title)}</h1><span class="subtitle">${esc(page.subtitle||'')}</span></div><button class="sidebar-close" data-sidebar-close aria-label="Close details">Close</button></div><div class="analysis-panel">${details.length?`<section><h2>Analysis settings</h2><div class="control-fields">${details.map(c=>`<label>${esc(c.label||controlLabel(c.name))}${controlHtml(c,page.control_values)}</label>`).join('')}</div></section>`:''}<section><h2>View details</h2><dl class="view-stats" id="view-stats">${statisticsRows(page.statistics)}<div><dt>Plotly render</dt><dd data-client-stat="plotly-runtime">—</dd></div></dl></section></div></aside>`}
 function updateStatistics(statistics){const target=document.querySelector('#view-stats');if(target)target.innerHTML=`${statisticsRows(statistics)}<div><dt>Plotly render</dt><dd data-client-stat="plotly-runtime">—</dd></div>`}
 function bindSidebar(){const sidebar=document.querySelector('[data-workspace-sidebar]'),backdrop=document.querySelector('[data-sidebar-backdrop]'),toggle=document.querySelector('[data-sidebar-toggle]');if(!sidebar||!backdrop||!toggle)return;const setOpen=open=>{sidebar.classList.toggle('open',open);backdrop.classList.toggle('open',open);toggle.setAttribute('aria-expanded',String(open))};toggle.onclick=()=>setOpen(!sidebar.classList.contains('open'));backdrop.onclick=()=>setOpen(false);sidebar.querySelector('[data-sidebar-close]').onclick=()=>setOpen(false)}
-async function catalog(navigate=true){stopPlayback();headerDetails.hidden=true;app.className='';if(navigate)history.pushState(null,'','/');try{const {workspaces}=await api('/workspaces');app.innerHTML=`<h1>Workspaces</h1><p class="lead">Choose a workspace to discover its available items.</p><div class="list">${workspaces.map(w=>`<article class="card" data-id="${esc(w.id)}"><div><span class="tag">${esc(w.category||'workspace')}</span><h2>${esc(w.name)}</h2></div><p class="muted">${esc(w.description)}</p><div class="card-tags">${w.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></article>`).join('')}</div>`;document.querySelectorAll('.card').forEach(x=>x.onclick=()=>items(x.dataset.id,workspaces.find(w=>w.id===x.dataset.id).name))}catch(e){fail(e)}}
-async function items(id,name,navigate=true){stopPlayback();headerDetails.hidden=true;app.className='';if(navigate)history.pushState(null,'',`/workspace/${encodeURIComponent(id)}`);app.innerHTML='<div class="empty">Discovering items…</div>';try{const {items:list}=await api(`/workspaces/${encodeURIComponent(id)}/items`);app.innerHTML=`<div class="crumb"><button id="home">Workspaces</button> / ${esc(name)}</div><h1>${esc(name)}</h1><p class="lead">Browse and open discovered items.</p><div class="toolbar"><input id="search" type="search" placeholder="Search items…"><button class="primary" id="refresh">Refresh list</button></div><div class="list" id="items"></div>`;const draw=()=>{const q=document.querySelector('#search').value.toLowerCase();const shown=list.filter(x=>!q||`${x.title} ${x.subtitle||''} ${x.tags.join(' ')}`.toLowerCase().includes(q));document.querySelector('#items').innerHTML=shown.length?shown.map(x=>`<article class="card" data-item="${esc(x.id)}"><div><h2>${esc(x.title)}</h2></div><p class="muted">${esc(x.subtitle||'')}</p><div class="card-tags">${x.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></article>`).join(''):'<div class="empty">No matching items.</div>';document.querySelectorAll('[data-item]').forEach(x=>x.onclick=()=>openItem(id,name,x.dataset.item))};draw();document.querySelector('#home').onclick=()=>catalog();document.querySelector('#search').oninput=draw;document.querySelector('#refresh').onclick=()=>items(id,name,false)}catch(e){fail(e)}}
+async function catalog(navigate=true){stopPlayback();headerDetails.hidden=true;headerDownload.hidden=true;headerCamera.hidden=true;app.className='';if(navigate)history.pushState(null,'','/');try{const {workspaces}=await api('/workspaces');app.innerHTML=`<h1>Workspaces</h1><p class="lead">Choose a workspace to discover its available items.</p><div class="list">${workspaces.map(w=>`<article class="card" data-id="${esc(w.id)}"><div><span class="tag">${esc(w.category||'workspace')}</span><h2>${esc(w.name)}</h2></div><p class="muted">${esc(w.description)}</p><div class="card-tags">${w.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></article>`).join('')}</div>`;document.querySelectorAll('.card').forEach(x=>x.onclick=()=>items(x.dataset.id,workspaces.find(w=>w.id===x.dataset.id).name))}catch(e){fail(e)}}
+async function items(id,name,navigate=true){stopPlayback();headerDetails.hidden=true;headerDownload.hidden=true;headerCamera.hidden=true;app.className='';if(navigate)history.pushState(null,'',`/workspace/${encodeURIComponent(id)}`);app.innerHTML='<div class="empty">Discovering items…</div>';try{const {items:list}=await api(`/workspaces/${encodeURIComponent(id)}/items`);app.innerHTML=`<div class="crumb"><button id="home">Workspaces</button> / ${esc(name)}</div><h1>${esc(name)}</h1><p class="lead">Browse and open discovered items.</p><div class="toolbar"><input id="search" type="search" placeholder="Search items…"><button class="primary" id="refresh">Refresh list</button></div><div class="list" id="items"></div>`;const draw=()=>{const q=document.querySelector('#search').value.toLowerCase();const shown=list.filter(x=>!q||`${x.title} ${x.subtitle||''} ${x.tags.join(' ')}`.toLowerCase().includes(q));document.querySelector('#items').innerHTML=shown.length?shown.map(x=>`<article class="card" data-item="${esc(x.id)}"><div><h2>${esc(x.title)}</h2></div><p class="muted">${esc(x.subtitle||'')}</p><div class="card-tags">${x.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></article>`).join(''):'<div class="empty">No matching items.</div>';document.querySelectorAll('[data-item]').forEach(x=>x.onclick=()=>openItem(id,name,x.dataset.item))};draw();document.querySelector('#home').onclick=()=>catalog();document.querySelector('#search').oninput=draw;document.querySelector('#refresh').onclick=()=>items(id,name,false)}catch(e){fail(e)}}
 async function openItem(wid,wname,iid,navigate=true,controlValues={},preservePlayback=false){
-  stopPlayback();headerDetails.hidden=true;app.className='item-page';if(!preservePlayback){playbackPosition=0;playbackPaused=false;Object.keys(viewSelections).forEach(key=>delete viewSelections[key])}if(navigate)history.pushState(null,'',`/workspace/${encodeURIComponent(wid)}/item/${encodeURIComponent(iid)}`);app.innerHTML='<div class="empty">Opening item…</div>';
-  try{const request=async values=>api(`/workspaces/${encodeURIComponent(wid)}/items/${encodeURIComponent(iid)}?${new URLSearchParams(values)}`);let data=await request({...controlValues,__theme:resolvedTheme(),__playback_time_seconds:playbackPosition}),p=data.page,requestGeneration=0;const isPlayback=p.playback.enabled;
-    headerDetails.hidden=false;app.innerHTML=`${isPlayback?`<div class="data-toolbar"><div class="playback-bar" id="playback-bar"><button class="primary" id="toggle">${playbackPaused?'▶ Play':'❚❚ Pause'}</button><input id="position" aria-label="Playback position" type="range" min="0" value="${playbackPosition}"><span id="counter"></span></div></div>`:''}${sidebarHtml(wname,p)}<section class="data-stage"><div id="active-view" class="view"></div></section>`;
-    document.querySelector('#active-view').innerHTML=renderLayout(p.layout,p.rendered_views);bindLayoutTabs();bindViewSwitchers();bindSidebar();observeDataStage();void initializePlotlyViews(p.rendered_views);requestAnimationFrame(resizePlots);
-    const selected=()=>({...Object.fromEntries([...document.querySelectorAll('[data-control]')].map(c=>[c.dataset.control,c.value])),__theme:resolvedTheme()});
-    const refresh=async(includeStatic=false)=>{const generation=++requestGeneration,result=await request({...selected(),__playback_time_seconds:playbackPosition,__include_static_views:includeStatic});if(generation!==requestGeneration)return false;data=result;p=data.page;updateStatistics(p.statistics);await updatePlotlyViews(p.rendered_views);updateMatplotlibViews(p.rendered_views);return true};
+  stopPlayback();headerDetails.hidden=true;headerDownload.hidden=true;headerCamera.hidden=true;app.className='item-page';if(!preservePlayback){playbackPosition=0;playbackPaused=false;playbackFollowLive=false;Object.keys(viewSelections).forEach(key=>delete viewSelections[key])}if(navigate)history.pushState(null,'',`/workspace/${encodeURIComponent(wid)}/item/${encodeURIComponent(iid)}`);app.innerHTML='<div class="empty">Opening item…</div>';
+  try{const request=async values=>api(`/workspaces/${encodeURIComponent(wid)}/items/${encodeURIComponent(iid)}?${new URLSearchParams(values)}`);let data=await request({...controlValues,__theme:resolvedTheme(),__playback_time_seconds:playbackPosition}),p=data.page,requestGeneration=0;const isPlayback=p.playback.mode!=='static';
+    const playbackConfig=p.playback;headerDetails.hidden=false;headerDownload.hidden=false;headerCamera.hidden=false;app.innerHTML=`${isPlayback?`<div class="data-toolbar"><div class="playback-bar" id="playback-bar"><button class="primary" id="toggle">${playbackPaused?'▶ Play':'❚❚ Pause'}</button><input id="position" aria-label="Playback position" type="range" min="0" value="${playbackPosition}"><input id="current-time" aria-label="Current playback time in seconds" type="number" min="0" step="any" value="${playbackPosition}"><span id="counter"></span>${playbackConfig.mode==='live'?'<button class="live-toggle" id="jump-live">Live</button>':''}</div></div>`:''}${sidebarHtml(wname,p)}<section class="data-stage"><div id="active-view" class="view"></div></section>`;
+    document.querySelector('#active-view').innerHTML=renderLayout(p.layout,p.rendered_views,p.controls,p.control_values);bindLayoutTabs();bindViewSwitchers();bindSidebar();observeDataStage();void initializePlotlyViews(p.rendered_views);requestAnimationFrame(resizePlots);
+    const selected=()=>({...Object.fromEntries([...document.querySelectorAll('[data-control]')].map(c=>[c.dataset.control,c.value])),__theme:resolvedTheme(),__playback_follow_live:playbackFollowLive});
+    const runExport=async(format,button)=>{const original=button.textContent;button.disabled=true;button.textContent=format==='mat'?'Preparing .mat…':'Rendering…';try{const query=new URLSearchParams({...selected(),__playback_time_seconds:playbackPosition,__include_static_views:true,format}),job=await api(`/workspaces/${encodeURIComponent(wid)}/items/${encodeURIComponent(iid)}/exports?${query}`);let status;do{await new Promise(resolve=>setTimeout(resolve,350));status=await api(job.status_url)}while(status.status==='pending'||status.status==='running');if(status.status==='error')throw new Error(status.detail);for(const file of status.files){const link=document.createElement('a');link.href=file.url;link.download=file.name;link.click()}}catch(error){alert(`Export failed: ${error.message}`)}finally{button.disabled=false;button.textContent=original}};
+    headerDownload.onclick=()=>runExport('mat',headerDownload);headerCamera.onclick=()=>runExport('png',headerCamera);
+    const refresh=async(includeStatic=false)=>{const generation=++requestGeneration,result=await request({...selected(),__playback_time_seconds:playbackPosition,__include_static_views:includeStatic});if(generation!==requestGeneration)return false;data=result;Object.assign(playbackConfig,result.page.playback);p=result.page;p.playback=playbackConfig;if(playbackFollowLive)playbackPosition=playbackConfig.duration_seconds;updateStatistics(p.statistics);await updatePlotlyViews(p.rendered_views);updateMatplotlibViews(p.rendered_views);updateGenericViews(p.rendered_views);return true};
     const settingsChanged=async()=>{if(isPlayback)clearInterval(playbackTimer);const applied=await refresh(true);if(isPlayback&&applied)startFrameworkPlayback(p.playback,refresh)};
     if(isPlayback)startFrameworkPlayback(p.playback,refresh);else if(p.refresh.enabled)startFrameworkRefresh(p.refresh,refresh);document.querySelectorAll('[data-control]').forEach(x=>x.onchange=settingsChanged);document.querySelector('#home').onclick=()=>catalog();document.querySelector('#back').onclick=()=>items(wid,wname)
   }catch(e){fail(e)}}
@@ -126,6 +151,12 @@ class WorkspaceModuleRegistration:
 
 
 @dataclass
+class ExportJob:
+    directory: Path
+    future: Future[dict[str, object]]
+
+
+@dataclass
 class WorkspaceBrowserApp:
     title: str = "Scientific Workspace Browser"
     registry: WorkspaceRegistry | None = None
@@ -134,6 +165,13 @@ class WorkspaceBrowserApp:
     _fixed_workspaces: list[Any] = field(default_factory=list, init=False, repr=False)
     _workspace_snapshot: dict[Path, int] = field(default_factory=dict, init=False, repr=False)
     _reload_lock: RLock = field(default_factory=RLock, init=False, repr=False)
+    _export_lock: RLock = field(default_factory=RLock, init=False, repr=False)
+    _export_jobs: dict[str, ExportJob] = field(default_factory=dict, init=False, repr=False)
+    _export_executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(max_workers=2, thread_name_prefix="workspace-export"),
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if self.registry is None:
@@ -298,6 +336,174 @@ class WorkspaceBrowserApp:
             },
         }
 
+    def write_item_mat(
+        self,
+        workspace_id: str,
+        item_id: str,
+        control_values: dict[str, object] | None,
+        stream: Any,
+    ) -> str:
+        """Write the current delivered data and native view data to a MAT file."""
+        workspace = self.registry.get(workspace_id)
+        requested_values = dict(control_values or {})
+        open_with_values = getattr(workspace, "open_item_with_values", None)
+        opened = open_with_values(item_id, requested_values) if callable(open_with_values) else workspace.open_item(item_id)
+        opened.page.validate()
+        values = {control.name: control.default for control in opened.page.controls}
+        values.update(requested_values)
+        delivered = opened.page.export_callback(requested_values) if opened.page.export_callback is not None else None
+        views = [(view.name, view.callback(requested_values)) for view in opened.page.views]
+        write_mat_export(
+            stream,
+            workspace_id=workspace_id,
+            item_id=item_id,
+            playback=opened.page.playback,
+            refresh=opened.page.refresh,
+            parameters=values,
+            controls=opened.page.controls,
+            delivered_data=delivered,
+            layout=opened.page.layout,
+            metadata=opened.page.metadata,
+            statistics=opened.page.statistics,
+            views=views,
+        )
+        return f"{_export_stem(item_id, opened.page.playback.mode, values, delivered)}-analysis.mat"
+
+    def write_item_png_bundle(
+        self,
+        workspace_id: str,
+        item_id: str,
+        control_values: dict[str, object] | None,
+        stream: Any,
+    ) -> tuple[int, str]:
+        """Render every plot view for the current state into one ZIP."""
+        workspace = self.registry.get(workspace_id)
+        requested_values = dict(control_values or {})
+        open_with_values = getattr(workspace, "open_item_with_values", None)
+        opened = open_with_values(item_id, requested_values) if callable(open_with_values) else workspace.open_item(item_id)
+        opened.page.validate()
+        values = {control.name: control.default for control in opened.page.controls}
+        values.update(requested_values)
+        delivered = opened.page.export_callback(requested_values) if opened.page.export_callback is not None else None
+        views = [(view.name, view.callback(requested_values)) for view in opened.page.views]
+        stem = _export_stem(item_id, opened.page.playback.mode, values, delivered)
+        return write_png_bundle(stream, views, filename_prefix=stem), f"{stem}-plots.zip"
+
+    def start_export(
+        self,
+        workspace_id: str,
+        item_id: str,
+        control_values: dict[str, object],
+        export_format: str,
+    ) -> str:
+        """Run a MAT or PNG-directory export on the dedicated export executor."""
+        if export_format not in {"mat", "png"}:
+            raise ValueError("Export format must be 'mat' or 'png'")
+        job_id = uuid4().hex
+        directory = Path(mkdtemp(prefix=f"workspace-export-{job_id[:8]}-"))
+
+        def build() -> dict[str, object]:
+            if export_format == "mat":
+                target = directory / "export.mat"
+                with target.open("w+b") as stream:
+                    filename = self.write_item_mat(workspace_id, item_id, control_values, stream)
+                renamed = directory / filename
+                target.replace(renamed)
+                return {"format": "mat", "files": [filename]}
+            temporary = directory / "plots.zip"
+            with temporary.open("w+b") as stream:
+                count, filename = self.write_item_png_bundle(workspace_id, item_id, control_values, stream)
+            temporary.replace(directory / filename)
+            return {"format": "png", "files": [filename], "plot_count": count}
+
+        future = self._export_executor.submit(build)
+        with self._export_lock:
+            self._export_jobs[job_id] = ExportJob(directory, future)
+        return job_id
+
+    def export_status(self, job_id: str) -> dict[str, object]:
+        with self._export_lock:
+            job = self._export_jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if not job.future.done():
+            return {"id": job_id, "status": "running" if job.future.running() else "pending"}
+        try:
+            result = job.future.result()
+        except Exception as exc:
+            return {"id": job_id, "status": "error", "detail": str(exc)}
+        files = [
+            {"name": name, "url": f"/exports/{job_id}/{name}"}
+            for name in result["files"]
+        ]
+        return {"id": job_id, "status": "ready", "format": result["format"], "files": files}
+
+    def export_file(self, job_id: str, filename: str) -> Path:
+        with self._export_lock:
+            job = self._export_jobs.get(job_id)
+        if job is None or not job.future.done() or job.future.exception() is not None:
+            raise KeyError(job_id)
+        allowed = set(job.future.result()["files"])
+        if filename not in allowed:
+            raise KeyError(filename)
+        return job.directory / filename
+
+    def finish_export(self, job_id: str) -> None:
+        """Remove a completed export after its single output has been sent."""
+        with self._export_lock:
+            job = self._export_jobs.pop(job_id, None)
+        if job is not None:
+            shutil.rmtree(job.directory, ignore_errors=True)
+
+
+def _export_stem(item_id: str, mode: str, values: dict[str, object], delivered: object) -> str:
+    item = _filename_component(item_id)
+    if mode == "static":
+        return f"{item}-full-static"
+
+    sample_rate = _export_member(delivered, "sample_rate")
+    start_sample = _export_member(delivered, "start_sample")
+    start_seconds: object = values.get("__playback_time_seconds", 0.0)
+    if sample_rate is not None and start_sample is not None:
+        try:
+            start_seconds = float(start_sample) / float(sample_rate)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+    duration_seconds: object | None = values.get("buffer_seconds")
+    samples = _export_member(delivered, "ota_counts")
+    if samples is None:
+        samples = _export_member(delivered, "samples")
+    if sample_rate is not None and hasattr(samples, "shape") and samples.shape:
+        try:
+            duration_seconds = float(samples.shape[-1]) / float(sample_rate)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+    parts = [item, f"t{_seconds_token(start_seconds)}s"]
+    if duration_seconds is not None:
+        parts.append(f"buffer{_seconds_token(duration_seconds)}s")
+    parts.append(mode)
+    return "-".join(parts)
+
+
+def _export_member(value: object, name: str) -> object | None:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _seconds_token(value: object) -> str:
+    try:
+        return f"{float(value):.9f}".rstrip("0").rstrip(".") or "0"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _filename_component(value: str) -> str:
+    component = "".join(character if character.isalnum() or character in "-_." else "_" for character in value)
+    return component.strip("-_.") or "workspace"
+
 
 def _layout_to_dict(layout: Any) -> dict[str, Any]:
     return {
@@ -418,6 +624,17 @@ def _make_handler(app: WorkspaceBrowserApp) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        def _write_export_file(self, path: Path) -> None:
+            content_type = "application/x-matlab-data" if path.suffix == ".mat" else "application/zip"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with path.open("rb") as stream:
+                shutil.copyfileobj(stream, self.wfile)
+
         # BaseHTTPRequestHandler requires this exact method name.
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -440,6 +657,16 @@ def _make_handler(app: WorkspaceBrowserApp) -> type[BaseHTTPRequestHandler]:
 
             parts = [segment for segment in parsed.path.split("/") if segment]
             try:
+                if len(parts) == 2 and parts[0] == "exports":
+                    self._write_json(200, app.export_status(parts[1]))
+                    return
+                if len(parts) == 3 and parts[0] == "exports":
+                    export_path = app.export_file(parts[1], parts[2])
+                    try:
+                        self._write_export_file(export_path)
+                    finally:
+                        app.finish_export(parts[1])
+                    return
                 if len(parts) == 3 and parts[0] == "workspaces" and parts[2] == "items":
                     query = parse_qs(parsed.query)
                     self._write_json(200, {"items": app.list_items(parts[1], query)})
@@ -447,6 +674,12 @@ def _make_handler(app: WorkspaceBrowserApp) -> type[BaseHTTPRequestHandler]:
                 if len(parts) == 4 and parts[0] == "workspaces" and parts[2] == "items":
                     query = {name: values[-1] for name, values in parse_qs(parsed.query).items()}
                     self._write_json(200, app.open_item(parts[1], parts[3], query))
+                    return
+                if len(parts) == 5 and parts[0] == "workspaces" and parts[2] == "items" and parts[4] == "exports":
+                    query = {name: values[-1] for name, values in parse_qs(parsed.query).items()}
+                    export_format = str(query.pop("format", "mat"))
+                    job_id = app.start_export(parts[1], parts[3], query, export_format)
+                    self._write_json(202, {"id": job_id, "status": "pending", "status_url": f"/exports/{job_id}"})
                     return
             except KeyError:
                 self._write_json(404, {"error": "workspace_not_found"})

@@ -24,6 +24,7 @@ def analyze(recording: SigMFRecording, ui: AnalysisContext) -> None:
     pri_samples = max(1, round(pri_seconds * recording.sample_rate))
 
     time = ui.playback(
+        mode="seek",
         duration=max(seek_seconds, recording.duration - buffer_size / recording.sample_rate),
         step=seek_seconds,
         refresh_interval=refresh_seconds,

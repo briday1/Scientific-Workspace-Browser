@@ -58,7 +58,7 @@ class PluginAuthoringTests(unittest.TestCase):
         opened = workspace.open_item("recording")
         self.assertEqual("grid", opened.page.layout.kind)
         self.assertEqual(2, len(opened.page.views))
-        self.assertTrue(opened.page.playback.enabled)
+        self.assertEqual("seek", opened.page.playback.mode)
         self.assertEqual(4, opened.page.statistics["Samples"])
         self.assertRegex(opened.page.statistics["Analysis runtime"], r"^\d+\.\d ms$")
         figure = opened.page.views[0].callback({"size": "4"})
@@ -86,7 +86,8 @@ class PluginAuthoringTests(unittest.TestCase):
         )
         page = workspace.open_item_with_values("recording", {"buffer_size": "3", "__playback_time_seconds": "1"}).page
         self.assertEqual((2, 3, 4), page.views[0].callback({"buffer_size": "3", "__playback_time_seconds": "1"}).data[0].y)
-        self.assertTrue(page.playback.enabled)
+        self.assertEqual("seek", page.playback.mode)
+        self.assertEqual([2, 3, 4], page.export_callback({"buffer_size": "3", "__playback_time_seconds": "1"}))
 
     def test_analysis_can_request_framework_live_refresh(self):
         def analyze(data, ui: AnalysisContext):
@@ -109,11 +110,65 @@ class PluginAuthoringTests(unittest.TestCase):
         self.assertEqual(0.25, ui.number("duration", default=0.1, minimum=0.01, step=0.01))
         self.assertEqual(["integer", "float"], [control.control_type for control in ui.controls])
 
+    def test_inline_parameter_group_places_typed_controls_in_layout(self):
+        def analyze(data, ui: AnalysisContext):
+            with ui.tab("Parameterized"):
+                with ui.parameter_group("Display parameters", columns=2):
+                    threshold = ui.number("threshold", label="Threshold (dB)", default=2.5, step=0.1)
+                    mode = ui.select("mode", label="Estimator", default="Mean", options=("Mean", "Maximum"))
+                ui.plot(go.Figure(go.Scatter(y=[threshold], name=mode)), key="result")
+
+        workspace = AnalysisWorkspace(
+            identifier="inline-parameters",
+            name="Inline parameters",
+            description="Layout controls",
+            source=ExampleSource(),
+            analyze=analyze,
+        )
+        page = workspace.open_item_with_values("recording", {"threshold": "4.5", "mode": "Maximum"}).page
+        self.assertEqual(["inline", "inline"], [control.placement for control in page.controls])
+        self.assertEqual(["Threshold (dB)", "Estimator"], [control.label for control in page.controls])
+        self.assertEqual("control_group", page.layout.children[0].kind)
+        self.assertEqual({"label": "Display parameters", "columns": 2}, page.layout.children[0].props)
+        self.assertEqual(["threshold", "mode"], [node.props["name"] for node in page.layout.children[0].children])
+        figure = page.views[0].callback({"threshold": "4.5", "mode": "Maximum"})
+        self.assertEqual((4.5,), figure.data[0].y)
+        self.assertEqual("Maximum", figure.data[0].name)
+
     def test_analysis_can_publish_workflow_statistics(self):
         ui = AnalysisContext({})
         ui.stat("Intervals", 15)
         ui.stat("Buffer", "1.5 s")
         self.assertEqual({"Intervals": 15, "Buffer": "1.5 s"}, ui.statistics)
+
+    def test_switcher_views_can_mix_framework_tables_and_plots(self):
+        def analyze(data, ui: AnalysisContext):
+            with ui.tab("Calibration"):
+                with ui.switcher("Calibration", key="calibration"):
+                    with ui.switcher_view("Phase", columns=(1, 2)):
+                        ui.table([{"Channel": 1, "Offset": "0 deg"}], key="phase-table")
+                        ui.plot(go.Figure(), key="phase-plot")
+                    with ui.switcher_view("Noise", columns=(1, 2)):
+                        with ui.group("column"):
+                            with ui.parameter_group("Noise parameters"):
+                                ui.number("noise_floor", default=-174.0)
+                            ui.table([{"Channel": 1, "NF": "7 dB"}], key="noise-table")
+                        ui.plot(go.Figure(), key="noise-plot")
+
+        workspace = AnalysisWorkspace(
+            identifier="mixed-switcher",
+            name="Mixed switcher",
+            description="Mixed switched layouts",
+            source=ExampleSource(),
+            analyze=analyze,
+        )
+        page = workspace.open_item("recording").page
+        switcher = page.layout.children[0]
+        self.assertEqual(["Phase", "Noise"], [choice.props["label"] for choice in switcher.children])
+        self.assertEqual((1, 2), switcher.children[0].props["columns"])
+        self.assertEqual(["view_slot", "view_slot"], [node.kind for node in switcher.children[0].children])
+        self.assertEqual("inline", page.controls[0].placement)
+        self.assertEqual(["control_group", "view_slot"], [node.kind for node in switcher.children[1].children[0].children])
 
     def test_analysis_can_add_multiple_button_and_dropdown_view_switchers(self):
         def figure(value):

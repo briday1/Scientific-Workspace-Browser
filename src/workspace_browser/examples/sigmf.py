@@ -60,6 +60,7 @@ def analyze(recording: SigMFRecording, ui: AnalysisContext) -> None:
     refresh_seconds = ui.number("refresh_seconds", default=0.25, minimum=0.05, step=0.05)
     buffer_duration = min(buffer_size, recording.frame_count) / recording.sample_rate
     time = ui.playback(
+        mode="seek",
         duration=max(seek_seconds, recording.duration - buffer_duration),
         step=seek_seconds,
         refresh_interval=refresh_seconds,

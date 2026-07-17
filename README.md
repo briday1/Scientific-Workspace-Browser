@@ -33,7 +33,7 @@ class PlaybackWindows:
         seconds = ui.number("buffer_seconds", default=0.1, minimum=0.001)
         step = ui.number("seek_seconds", default=0.05, minimum=0.001)
         size = round(seconds * recording.sample_rate)
-        time = ui.playback(duration=recording.duration - seconds, step=step)
+        time = ui.playback(mode="seek", duration=recording.duration - seconds, step=step)
         return recording.read(time=time, size=size)
 
 
@@ -89,7 +89,7 @@ flowchart TD
     pipeline --> figures["Same calibration and Plotly views"]
 ```
 
-`BufferedDelivery` reads only the current OTA window and enables playback. `WholeFileDelivery` reads all 10,000,000 OTA samples per channel once, exposes no buffer/seek/refresh controls, and reduces the complete set of PRI rows to bounded waterfall display resolution. `analyze_lfm` is identical in both workspaces.
+`BufferedDelivery` reads only the current OTA window and enables playback. `WholeFileDelivery` reads all 10,000,000 OTA samples per channel once and exposes no buffer, seek, or refresh controls. Both expose an editable processing PRF, initially 1 kHz from the collection metadata, and use it to reshape samples on every analysis run. Whole-file output reduces the complete set of resulting PRI rows to bounded waterfall display resolution. `analyze_lfm` is identical in both workspaces.
 
 ## Local LFM collection data
 
@@ -97,7 +97,13 @@ The 10 MHz LFM workspaces read from `./data/lfm-collection/`, which is ignored b
 
 ```json
 {
-  "collection": {"name": "My LFM collection", "sample_rate": 10000000, "calibration_dbm": -20},
+  "collection": {
+    "name": "My LFM collection",
+    "sample_rate": 10000000,
+    "calibration_dbm": -20,
+    "ota_prf_hz": 1000,
+    "ota_pulse_width_seconds": 0.00005
+  },
   "members": [
     {"role": "calibration", "channel": 1, "metadata": "calibration-ch1.sigmf-meta", "data": "calibration-ch1.sigmf-data", "duration_seconds": 0.1},
     {"role": "terminated-noise", "channel": 1, "metadata": "terminated-noise-ch1.sigmf-meta", "data": "terminated-noise-ch1.sigmf-data", "duration_seconds": 0.1},
@@ -114,7 +120,35 @@ Generate the synthetic local collection when you want a ready-to-run example; ge
 PYTHONPATH=src python scripts/generate_lfm_collection.py
 ```
 
+The generator uses spectrally white complex Gaussian noise corresponding to a hidden 7 dB true noise figure. Each calibration member is a noise-free 1 MHz tone at the declared incident power. Each terminated-noise member contains only receiver noise, and the same noise level is added independently to the OTA channels. OTA is a 1 kHz pulse train of 50 us LFM pulses sweeping 4 MHz; the analysis reads that PRF from the manifest and reshapes data at the matching 1 ms PRI. The true noise figure is intentionally not written to the collection manifest, so the calibration workflow must estimate it from the samples. To generate a different unknown case locally, pass `--noise-figure-db VALUE`.
+
 For a live source, call `ui.refresh(every=1.0)` in place of `ui.playback(...)`. The framework schedules reruns, prevents overlapping browser requests, and updates existing Plotly figures or Matplotlib image surfaces. The lower-level `Workspace` protocol remains available for unusual integrations.
+
+Growing recorded files can retain playback and seeking while also exposing their moving tail:
+
+```python
+time = ui.playback(
+    mode="live",
+    duration=current_available_duration,
+    step=0.01,
+    refresh_interval=0.15,
+    loop=False,
+)
+```
+
+Playback is an explicit pipeline policy:
+
+| Mode | Controls | Data behavior |
+| --- | --- | --- |
+| `static` | No playback bar | The delivery passes the complete selected input. |
+| `seek` | Play/pause, slider, and editable time | The delivery passes the window at the requested time. |
+| `live` | All seek controls plus **Live** | The user can inspect history or follow the growing tail. |
+
+The delivery selects this with `ui.playback(mode="static" | "seek" | "live", ...)`; plot and analysis functions still only receive the data prepared for them. In `live` mode, slider movement or manual time entry leaves the tail and reads the requested historical buffer; clicking **Live** resumes periodic tail following. The source or delivery policy must recalculate available duration on every analysis request. Multi-channel file readers should use the shortest current channel length so only complete common samples are exposed.
+
+Every opened item has **Download .mat** and camera actions in the top bar. The MATLAB file contains one `workspace_export` structure with the exact data object delivered to the analysis and every registered view across all tabs and switcher choices—not only the currently visible view. Plot traces, framework tables, text/diagnostics, layout, controls, metadata, statistics, current parameters, playback, and refresh configuration are included. The camera action renders every Plotly or Matplotlib view, including hidden tab and switcher choices, as individual PNGs in one ZIP. Both exports run on a dedicated background executor so playback and other browser requests remain responsive. Seek/live workspaces export the selected buffer; static whole-file delivery exports the complete input.
+
+Export filenames identify the item and actual delivered window, for example `capture-t0.125s-buffer0.02s-live-analysis.mat` and `capture-t0.125s-buffer0.02s-live-plots.zip`. PNG filenames repeat that context before the view name. Static delivery uses `full-static` instead of a time window.
 
 Call `ui.stat(label, value)` to add workflow-specific details such as buffer size, interval count, or sample rate to the analysis panel. The framework adds analysis runtime, view callback/serialization time, and browser-side Plotly render time automatically; all values update with each processed buffer.
 
@@ -130,7 +164,7 @@ with ui.tab("Calibration", update="static"):
         depends_on=("window",),
     )
 
-time = ui.playback(duration=data.duration, step=data.frame_duration)
+time = ui.playback(mode="seek", duration=data.duration, step=data.frame_duration)
 with ui.tab("Playback"):  # dynamic by default
     ui.plot(make_frame_figure(data.frame(time)), key="frame")
 ```
@@ -148,6 +182,58 @@ with ui.tab("Calibration", columns=(1, 2), update="static"):
     with ui.group("column"):
         ui.plot(before_after_figure, key="alignment")
 ```
+
+Analysis parameters can also live directly in the tab layout. Numbers and dropdowns declared inside `ui.parameter_group(...)` are rendered in place, omitted from Details, and passed back through the same analysis callback whenever they change:
+
+```python
+with ui.tab("Noise calibration", columns=(1, 2), update="static"):
+    with ui.group("column"):
+        with ui.parameter_group("Noise reference", columns=2):
+            reference_psd = ui.number(
+                "reference_psd",
+                label="Reference PSD (dBm/Hz)",
+                default=data.reference_psd,
+                step=0.1,
+            )
+            reference_lines = ui.select(
+                "reference_lines",
+                label="Reference lines",
+                default="Expected + measured",
+                options=("Expected + measured", "Expected only", "Measured only"),
+            )
+        ui.table(
+            lambda: calibration_rows(data, reference_psd),
+            key="calibration-stats",
+            depends_on=("reference_psd",),
+        )
+
+    ui.plot(
+        lambda: noise_figure(data, reference_psd, reference_lines),
+        key="noise",
+        depends_on=("reference_psd", "reference_lines"),
+    )
+```
+
+Parameters can instead belong to one switched view and occupy a compact column beside its content rather than reducing plot height:
+
+```python
+with ui.tab("Calibration", update="static"):
+    with ui.switcher("Calibration view", key="calibration-view"):
+        with ui.switcher_view("Phase", columns=(1, 2)):
+            ui.table(phase_diagnostics, key="phase-diagnostics")
+            ui.plot(phase_figure, key="phase-plot")
+
+        with ui.switcher_view("Noise", columns=(1, 2)):
+            with ui.group("column"):
+                with ui.parameter_group("Calibration parameters"):
+                    reference_psd = ui.number("reference_psd", default=-174.0, step=0.1)
+                    estimator = ui.select("estimator", default="Mean", options=("Mean", "Median"))
+                ui.table(noise_diagnostics, key="noise-diagnostics")
+            ui.plot(noise_figure, key="noise-plot")
+```
+
+`ui.switcher_view(...)` acts like a lightweight sub-tab and may contain mixed framework tables, text, plots, and inline parameter groups. Anything placed inside one choice is visible only for that choice. Controls declared outside `ui.parameter_group(...)` retain their existing behavior and appear in Details. For static views, list parameter names in `depends_on` so the framework maintains a separate cached result for each parameter value.
+
 
 `ui.view(...)` is the generic hook; `ui.plot(...)`, `ui.text(...)`, and `ui.table(...)` are readable aliases. Groups may be rows, columns, stacks, or panels and can be nested within a tab.
 

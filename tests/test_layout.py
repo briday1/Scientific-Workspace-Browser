@@ -1,7 +1,7 @@
 import unittest
 
 from workspace_browser.core.errors import InvalidLayoutError
-from workspace_browser.core.layout import container, validate_layout, view_slot
+from workspace_browser.core.layout import container, control_slot, validate_layout, view_slot
 from workspace_browser.core.page import PageDefinition, ViewSpec
 
 
@@ -17,6 +17,11 @@ class LayoutTests(unittest.TestCase):
     def test_unknown_view_fails_validation(self):
         with self.assertRaises(InvalidLayoutError):
             validate_layout(view_slot("missing"), {"a"})
+
+    def test_control_slots_must_reference_declared_controls(self):
+        validate_layout(container("control_group", (control_slot("threshold"),)), set(), {"threshold"})
+        with self.assertRaises(InvalidLayoutError):
+            validate_layout(control_slot("missing"), set(), {"threshold"})
 
 
 if __name__ == "__main__":

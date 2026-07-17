@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from plotly.graph_objects import Figure
@@ -14,6 +15,7 @@ from workspace_browser.web.application import (
     WorkspaceBrowserApp,
     WorkspaceModuleRegistration,
     _make_handler,
+    _export_stem,
     _module_watch_snapshot,
     create_app,
 )
@@ -55,7 +57,7 @@ class WebAppTests(unittest.TestCase):
         time_playback = payload["page"]["rendered_views"][0]["value"]
         self.assertIn("data", time_playback)
         self.assertIn("layout", time_playback)
-        self.assertTrue(payload["page"]["playback"]["enabled"])
+        self.assertEqual("seek", payload["page"]["playback"]["mode"])
 
         opened = GenericExampleWorkspace().open_item("sigmf-tone-demo")
         self.assertIsInstance(opened.page.views[0].callback({}), Figure)
@@ -84,7 +86,7 @@ class WebAppTests(unittest.TestCase):
         for item in items:
             self.assertTrue(item["source_reference"].endswith(f"{item['id']}.sigmf-meta"))
             page = app.open_item("sigmf-viewer", item["id"], {"__playback_time_seconds": "0.5"})["page"]
-            self.assertTrue(page["playback"]["enabled"])
+            self.assertEqual("seek", page["playback"]["mode"])
             self.assertEqual(expected_playback_ends[item["id"]], page["playback"]["duration_seconds"])
             self.assertEqual(expected_view_counts[item["id"]], len(page["rendered_views"]))
             self.assertEqual(["markdown", "table", "plotly"], [view["kind"] for view in page["rendered_views"][:3]])
@@ -113,7 +115,7 @@ class WebAppTests(unittest.TestCase):
         items = app.list_items("sigmf-matplotlib-viewer", {})
         self.assertEqual(["four-channel", "single-channel-bursts", "two-channel-sweep"], [item["id"] for item in items])
         page = app.open_item("sigmf-matplotlib-viewer", "four-channel", {"__playback_time_seconds": "0.5"})["page"]
-        self.assertTrue(page["playback"]["enabled"])
+        self.assertEqual("seek", page["playback"]["mode"])
         self.assertEqual(["Time Domain", "Frequency Domain"], [child["props"]["label"] for child in page["layout"]["children"]])
         self.assertEqual(8, len(page["rendered_views"]))
         self.assertTrue(all(view["kind"] == "matplotlib" for view in page["rendered_views"]))
@@ -205,13 +207,21 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Scientific Workspace Browser", body)
         self.assertIn('id="fullscreen-toggle"', body)
         self.assertIn('id="header-details"', body)
+        self.assertIn('id="header-download"', body)
+        self.assertIn('id="header-camera"', body)
+        self.assertIn("/exports?", body)
+        self.assertIn("runExport('mat'", body)
+        self.assertIn("runExport('png'", body)
         self.assertIn("requestFullscreen()", body)
         self.assertIn("fullscreenchange", body)
         self.assertIn("catalog()", body)
         self.assertIn('/assets/plotly.min.js', body)
         self.assertIn("updatePlotlyViews(p.rendered_views)", body)
         self.assertIn("updateMatplotlibViews(p.rendered_views)", body)
+        self.assertIn("updateGenericViews(p.rendered_views)", body)
         self.assertIn('data-matplotlib-view', body)
+        self.assertIn("node.kind==='control_slot'", body)
+        self.assertIn('class="parameter-group"', body)
         self.assertIn('class="data-stage"', body)
         self.assertIn('class="workspace-sidebar"', body)
         self.assertIn('data-sidebar-toggle', body)
@@ -225,6 +235,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="data-table"', body)
         self.assertIn("gridTemplate(node.props.columns)", body)
         self.assertIn("function sizeDataStage()", body)
+        self.assertIn('id="current-time"', body)
+        self.assertIn('step="any"', body)
+        self.assertIn("const seek=async value=>", body)
+        self.assertIn('id="jump-live"', body)
+        self.assertIn("p.playback.mode!=='static'", body)
+        self.assertIn("playbackConfig.mode==='live'", body)
+        self.assertIn("__playback_follow_live:playbackFollowLive", body)
+        self.assertIn("Object.assign(playbackConfig,result.page.playback)", body)
         self.assertIn("window.innerHeight-stage.getBoundingClientRect().top", body)
         self.assertIn("--grid-rows:repeat(", body)
         self.assertNotIn("calc((100vh - 188px)/2)", body)
@@ -241,6 +259,50 @@ class WebAppTests(unittest.TestCase):
         handler.do_GET()
         javascript = handler._write_javascript.call_args.args[0]
         self.assertIn("plotly.js", javascript)
+
+    def test_mat_export_runs_as_a_background_job(self):
+        app = create_app()
+        job_id = app.start_export(
+            "sigmf-viewer",
+            "single-channel-bursts",
+            {"__playback_time_seconds": "0.5"},
+            "mat",
+        )
+        app._export_jobs[job_id].future.result(timeout=10)
+        status = app.export_status(job_id)
+        self.assertEqual("ready", status["status"])
+        self.assertEqual("mat", status["format"])
+        self.assertEqual("single-channel-bursts-t0.5s-seek-analysis.mat", status["files"][0]["name"])
+        path = app.export_file(job_id, status["files"][0]["name"])
+        self.assertEqual(b"MATL", path.read_bytes()[:4])
+
+    def test_camera_export_runs_as_a_background_job(self):
+        app = create_app()
+        job_id = app.start_export(
+            "sigmf-matplotlib-viewer",
+            "single-channel-bursts",
+            {"__playback_time_seconds": "0.5"},
+            "png",
+        )
+        result = app._export_jobs[job_id].future.result(timeout=20)
+        status = app.export_status(job_id)
+        self.assertEqual("ready", status["status"])
+        self.assertEqual("png", status["format"])
+        self.assertGreater(result["plot_count"], 0)
+        path = app.export_file(job_id, status["files"][0]["name"])
+        self.assertEqual(b"PK", path.read_bytes()[:2])
+
+    def test_export_names_use_actual_delivered_window_time(self):
+        delivered = {
+            "sample_rate": 1_000.0,
+            "start_sample": 125,
+            "samples": SimpleNamespace(shape=(4, 20)),
+        }
+        self.assertEqual(
+            "capture-t0.125s-buffer0.02s-live",
+            _export_stem("capture", "live", {"__playback_time_seconds": 0.1}, delivered),
+        )
+        self.assertEqual("capture-full-static", _export_stem("capture", "static", {}, delivered))
 
     def test_module_reload_watcher_includes_source_and_sigmf_data(self):
         project_root = Path(__file__).resolve().parents[1]
