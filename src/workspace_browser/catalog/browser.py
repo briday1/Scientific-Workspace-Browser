@@ -38,7 +38,14 @@ def sort_items(items: list[ItemDescriptor], by: str = "title", descending: bool 
     if by == "status":
         return sorted(items, key=lambda item: item.status.value, reverse=descending)
     if by == "timestamp":
-        return sorted(items, key=lambda item: item.timestamp or 0, reverse=descending)
+        return sorted(
+            items,
+            key=lambda item: (
+                item.timestamp is None,
+                item.timestamp.timestamp() if item.timestamp else 0.0,
+            ),
+            reverse=descending,
+        )
     return sorted(items, key=lambda item: item.title.lower(), reverse=descending)
 
 

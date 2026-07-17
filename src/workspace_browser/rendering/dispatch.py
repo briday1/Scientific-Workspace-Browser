@@ -34,5 +34,8 @@ def detect_render_kind(value: object) -> RenderKind:
     if isinstance(value, dict) and value.get("type") == "image":
         return RenderKind.IMAGE
     if isinstance(value, str):
-        return RenderKind.MARKDOWN if value.strip().startswith("#") else RenderKind.TEXT
+        stripped = value.lstrip()
+        is_markdown_heading = stripped.startswith("# ")
+        is_markdown_multiline = "\n# " in stripped or stripped.startswith("## ") or stripped.startswith("### ")
+        return RenderKind.MARKDOWN if is_markdown_heading or is_markdown_multiline else RenderKind.TEXT
     return RenderKind.UNKNOWN

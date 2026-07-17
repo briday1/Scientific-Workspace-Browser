@@ -23,7 +23,7 @@ class WorkspaceMetadata:
             raise ValueError("Workspace display_name must be non-empty")
 
 
-@dataclass(frozen=True)
+@dataclass
 class ItemDescriptor:
     identifier: str
     title: str
@@ -41,7 +41,7 @@ class ItemDescriptor:
             raise ValueError("Item identifier must be non-empty")
         if not self.title.strip():
             raise ValueError("Item title must be non-empty")
-        object.__setattr__(self, "status", normalize_status(self.status))
+        self.status = normalize_status(self.status)
 
 
 @dataclass(frozen=True)

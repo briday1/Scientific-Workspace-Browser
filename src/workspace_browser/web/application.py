@@ -115,6 +115,7 @@ def _make_handler(app: WorkspaceBrowserApp) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        # BaseHTTPRequestHandler requires this exact method name.
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/health":
