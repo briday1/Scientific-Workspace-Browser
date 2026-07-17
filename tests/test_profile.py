@@ -14,7 +14,7 @@ class BrowserProfileTests(unittest.TestCase):
         app = create_app(config_path=profile_path)
         self.assertEqual("Signal Analysis Browser", app.title)
         self.assertEqual(
-            ["recorded-signals", "recorded-signals-matplotlib", "pri-analysis"],
+            ["recorded-signals", "recorded-signals-matplotlib", "lfm-collection", "lfm-full-recording", "pri-analysis"],
             [workspace["id"] for workspace in app.list_workspaces()],
         )
 

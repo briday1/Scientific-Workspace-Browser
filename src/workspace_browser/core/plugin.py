@@ -34,6 +34,12 @@ class DataSource(Protocol):
     def open(self, resource: DataResource) -> Any: ...
 
 
+class DataDelivery(Protocol):
+    """Framework-side policy that prepares source data for one analysis run."""
+
+    def prepare(self, source_data: Any, context: AnalysisContext) -> Any: ...
+
+
 class DirectorySource:
     """Framework-owned discovery for the common directory-of-inputs case."""
 
@@ -107,6 +113,11 @@ class AnalysisContext:
         self._switcher_keys: set[str] = set()
         self._once_cache = once_cache if once_cache is not None else {}
         self._cache_lock = cache_lock or RLock()
+
+    @property
+    def theme(self) -> str:
+        """The browser's resolved color theme; plugins may use it or ignore it."""
+        return str(self.values.get("__theme", "light"))
 
     @property
     def time(self) -> float:
@@ -327,7 +338,7 @@ class AnalysisContext:
     ) -> object:
         factory = figure if callable(figure) else lambda: figure
         if update == "static":
-            dependency_values = tuple((name, repr(self.values.get(name))) for name in depends_on)
+            dependency_values = (("__theme", repr(self.values.get("__theme", "light"))),) + tuple((name, repr(self.values.get(name))) for name in depends_on)
             cache_key = ("view", key, dependency_values)
             with self._cache_lock:
                 if cache_key not in self._once_cache:
@@ -356,6 +367,7 @@ class AnalysisWorkspace:
         description: str,
         source: DataSource,
         analyze: Callable[[Any, AnalysisContext], None],
+        delivery: DataDelivery | None = None,
         version: str = "0.1.0",
         category: str | None = None,
         tags: tuple[str, ...] = (),
@@ -363,6 +375,7 @@ class AnalysisWorkspace:
         self.metadata = WorkspaceMetadata(identifier, name, description, version, category, tags)
         self.source = source
         self.analyze = analyze
+        self.delivery = delivery
         self._once_caches: dict[str, dict[tuple[object, ...], object]] = {}
         self._cache_lock = RLock()
 
@@ -401,7 +414,8 @@ class AnalysisWorkspace:
             if key not in cache:
                 context = AnalysisContext(values, once_cache=once_cache, cache_lock=self._cache_lock)
                 started = perf_counter()
-                self.analyze(data, context)
+                prepared = self.delivery.prepare(data, context) if self.delivery is not None else data
+                self.analyze(prepared, context)
                 context.statistics.setdefault("Analysis runtime", f"{(perf_counter() - started) * 1_000:.1f} ms")
                 cache.clear()
                 cache[key] = context

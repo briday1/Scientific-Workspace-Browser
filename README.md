@@ -28,17 +28,21 @@ Most plugins should use the high-level source + analysis API instead of implemen
 ```python
 from workspace_browser.plugin import AnalysisWorkspace, DirectorySource
 
-def analyze(data, ui):
-    window = ui.number("window", default=128, minimum=1, step=1)
+class PlaybackWindows:
+    def prepare(self, recording, ui):
+        seconds = ui.number("buffer_seconds", default=0.1, minimum=0.001)
+        step = ui.number("seek_seconds", default=0.05, minimum=0.001)
+        size = round(seconds * recording.sample_rate)
+        time = ui.playback(duration=recording.duration - seconds, step=step)
+        return recording.read(time=time, size=size)
 
-    # For recorded data, the framework owns the clock and reruns this function.
-    time = ui.playback(duration=data.duration, step=data.frame_duration)
-    frame = data.frame(time, window)
-    ui.stat("Buffer", f"{len(frame)} samples")
 
+def analyze(samples, ui):
+    # This function only processes what it receives. It does not know whether
+    # samples is a live window, a playback buffer, or a complete recording.
     with ui.tab("Overview", columns=2):
-        ui.plot(make_time_figure(frame), key="time")
-        ui.plot(make_spectrum_figure(frame), key="spectrum")
+        ui.plot(make_time_figure(samples), key="time")
+        ui.plot(make_spectrum_figure(samples), key="spectrum")
 
 workspace = AnalysisWorkspace(
     identifier="my-results",
@@ -49,51 +53,66 @@ workspace = AnalysisWorkspace(
         pattern="*.result",
         loader=load_my_data,
     ),
+    delivery=PlaybackWindows(),
     analyze=analyze,
 )
 ```
 
-`DirectorySource` scans the directory and creates one browser row per matching file. Use `recursive=True` for nested directories or provide `describe(path)` to customize row titles, tags, and summary fields. Implement the `DataSource` interface when discovery is not file-based (for example, a database or REST API).
+`DirectorySource` owns discovery and opening. The optional `DataDelivery` policy owns live refresh, playback, seeking, buffering, or whole-file loading. The analysis callback receives only the prepared data and can remain unchanged when delivery mode changes.
 
 ## SigMF workspace flow
 
-The bundled SigMF workspace is the concrete example of the contract. Its loader creates a lightweight recording object; it does **not** load the `.sigmf-data` payload at item-open time. The analysis chooses a buffer, then asks that object for the current window.
+The LFM examples show one analysis pipeline used with two delivery policies.
 
 ```mermaid
 flowchart TD
     files["SigMF directory\n.sigmf-meta + .sigmf-data"]
 
-    subgraph plugin["SigMF workspace code"]
-        create["create_workspace()\nAnalysisWorkspace(...)"]
-        source["DirectorySource\npattern=*.sigmf-meta"]
-        describe["_describe_recording(path)\nlisting title / tags / summary"]
-        load["_read_recording(meta path)\nreturns SigMFRecording\npaths + metadata + dimensions"]
-        analyze["analyze(recording, ui)\nchooses buffer and plots"]
-        frame["recording.frame(time, buffer_size)\nseek + read only that window"]
-        figures["ui.plot(native Figure)\nPlotly or Matplotlib"]
+    subgraph entries["Tiny workspace entry points"]
+        playback["lfm_collection.py\nBufferedDelivery"]
+        whole["lfm_full_recording.py\nWholeFileDelivery"]
     end
 
-    subgraph framework["Browser framework"]
-        listing["Discover items\nand show directory rows"]
-        open["Open selected item\ncall source.open(resource)"]
-        clock["Playback / controls\nprovide current time and settings"]
-        render["Serialize views\nand update browser"]
+    subgraph shared["Shared LFM implementation"]
+        source["DirectorySource\nopens collection manifest"]
+        delivery["Framework delivery policy\nprepares samples"]
+        pipeline["analyze_lfm(samples, ui)\ncalibrate / process / plot"]
     end
 
+    playback --> source
+    whole --> source
     files --> source
-    create --> source
-    source -->|discover| describe --> listing
-    listing -->|select item| open
-    source -->|open selected .sigmf-meta| load
-    load -->|SigMFRecording| analyze
-    clock -->|time + control values| analyze
-    analyze -->|buffer request| frame
-    frame -->|read segment from .sigmf-data| files
-    frame -->|channel samples| analyze
-    analyze --> figures --> render
+    source --> delivery
+    playback -->|buffer / seek / refresh controls| delivery
+    whole -->|all OTA samples; no controls| delivery
+    delivery -->|same LfmInput contract| pipeline
+    pipeline --> figures["Same calibration and Plotly views"]
 ```
 
-`SigMFRecording` retains the metadata and file paths. `recording.frame(...)` is the workspace-defined I/O step that decides how much sample data to pull. In the PRI workspace, `buffer_seconds` determines `buffer_size`, so each playback update seeks and reads only that requested PRI-analysis buffer.
+`BufferedDelivery` reads only the current OTA window and enables playback. `WholeFileDelivery` reads all 10,000,000 OTA samples per channel once, exposes no buffer/seek/refresh controls, and reduces the complete set of PRI rows to bounded waterfall display resolution. `analyze_lfm` is identical in both workspaces.
+
+## Local LFM collection data
+
+The 10 MHz LFM workspaces read from `./data/lfm-collection/`, which is ignored by Git and is not packaged. The manifest identifies twelve single-channel `ci16_le` IQ pairs: four calibration, four terminated-noise, and four OTA members.
+
+```json
+{
+  "collection": {"name": "My LFM collection", "sample_rate": 10000000, "calibration_dbm": -20},
+  "members": [
+    {"role": "calibration", "channel": 1, "metadata": "calibration-ch1.sigmf-meta", "data": "calibration-ch1.sigmf-data", "duration_seconds": 0.1},
+    {"role": "terminated-noise", "channel": 1, "metadata": "terminated-noise-ch1.sigmf-meta", "data": "terminated-noise-ch1.sigmf-data", "duration_seconds": 0.1},
+    {"role": "ota", "channel": 1, "metadata": "ota-ch1.sigmf-meta", "data": "ota-ch1.sigmf-data", "duration_seconds": 1.0}
+  ]
+}
+```
+
+The abbreviated manifest above shows channel 1; repeat each role for channels 2 through 4. Incident calibration power is the only calibration constant. Phase, volts/count, noise power, noise PSD, and noise figure are estimated from the calibration and terminated-noise data.
+
+Generate the synthetic local collection when you want a ready-to-run example; generated data stays ignored under `data/`:
+
+```bash
+PYTHONPATH=src python scripts/generate_lfm_collection.py
+```
 
 For a live source, call `ui.refresh(every=1.0)` in place of `ui.playback(...)`. The framework schedules reruns, prevents overlapping browser requests, and updates existing Plotly figures or Matplotlib image surfaces. The lower-level `Workspace` protocol remains available for unusual integrations.
 

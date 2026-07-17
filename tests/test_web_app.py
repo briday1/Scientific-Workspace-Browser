@@ -23,9 +23,9 @@ class WebAppTests(unittest.TestCase):
     def test_create_app_has_example_workspace(self):
         app = create_app()
         workspaces = app.list_workspaces()
-        self.assertEqual(4, len(workspaces))
+        self.assertEqual(6, len(workspaces))
         self.assertEqual(
-            {"generic-example", "sigmf-viewer", "sigmf-matplotlib-viewer", "pri-waterfall"},
+            {"generic-example", "sigmf-viewer", "sigmf-matplotlib-viewer", "lfm-collection", "lfm-full-recording", "pri-waterfall"},
             {workspace["id"] for workspace in workspaces},
         )
 
@@ -203,13 +203,19 @@ class WebAppTests(unittest.TestCase):
         handler.do_GET()
         body = handler._write_html.call_args.args[0]
         self.assertIn("Scientific Workspace Browser", body)
+        self.assertIn('id="fullscreen-toggle"', body)
+        self.assertIn('id="header-details"', body)
+        self.assertIn("requestFullscreen()", body)
+        self.assertIn("fullscreenchange", body)
         self.assertIn("catalog()", body)
         self.assertIn('/assets/plotly.min.js', body)
         self.assertIn("updatePlotlyViews(p.rendered_views)", body)
         self.assertIn("updateMatplotlibViews(p.rendered_views)", body)
         self.assertIn('data-matplotlib-view', body)
         self.assertIn('class="data-stage"', body)
-        self.assertIn('class="control-drawer"', body)
+        self.assertIn('class="workspace-sidebar"', body)
+        self.assertIn('data-sidebar-toggle', body)
+        self.assertIn("bindSidebar()", body)
         self.assertIn('class="view-stats"', body)
         self.assertIn('data-client-stat="plotly-runtime"', body)
         self.assertIn("updateStatistics(p.statistics)", body)

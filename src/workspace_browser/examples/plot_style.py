@@ -12,20 +12,22 @@ TEAL = "#087e8b"
 ORANGE = "#d35d35"
 
 
-def style_plotly(figure: Any, *, title: str | None = None) -> Any:
+def style_plotly(figure: Any, *, title: str | None = None, theme: str = "light") -> Any:
     """Give Plotly figures a compact, consistent scientific plotting treatment."""
     figure.update_layout(
-        template="simple_white",
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        font={"family": "system-ui, -apple-system, sans-serif", "color": INK, "size": 12},
+        template="plotly_dark" if theme == "dark" else "simple_white",
+        paper_bgcolor="#10252d" if theme == "dark" else "white",
+        plot_bgcolor="#10252d" if theme == "dark" else "white",
+        font={"family": "system-ui, -apple-system, sans-serif", "color": "#e7f1f3" if theme == "dark" else INK, "size": 12},
         margin={"l": 62, "r": 28, "t": 52, "b": 54},
         hovermode="x unified",
         title={"text": title, "x": 0.02, "xanchor": "left", "font": {"size": 15}},
         legend={"orientation": "h", "x": 0, "y": 1.12, "yanchor": "bottom"},
     )
-    figure.update_xaxes(showline=True, linecolor=GRID, gridcolor=GRID, zeroline=False, ticks="outside", tickcolor=MUTED)
-    figure.update_yaxes(showline=True, linecolor=GRID, gridcolor=GRID, zeroline=False, ticks="outside", tickcolor=MUTED)
+    grid = "#36515b" if theme == "dark" else GRID
+    muted = "#a9bdc2" if theme == "dark" else MUTED
+    figure.update_xaxes(showline=True, linecolor=grid, gridcolor=grid, gridwidth=0.5, zeroline=False, ticks="outside", tickcolor=muted)
+    figure.update_yaxes(showline=True, linecolor=grid, gridcolor=grid, gridwidth=0.5, zeroline=False, ticks="outside", tickcolor=muted)
     return figure
 
 

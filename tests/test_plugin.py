@@ -65,6 +65,29 @@ class PluginAuthoringTests(unittest.TestCase):
         self.assertIsInstance(figure, go.Figure)
         self.assertEqual((1, 2, 3, 4), figure.data[0].y)
 
+    def test_delivery_policy_prepares_data_before_analysis(self):
+        class WindowDelivery:
+            def prepare(self, source_data, ui):
+                size = ui.number("buffer_size", default=2, minimum=1)
+                start = round(ui.playback(duration=2.0, step=1.0))
+                return source_data[start : start + size]
+
+        def analyze(window, ui):
+            with ui.tab("Window"):
+                ui.plot(go.Figure(go.Scatter(y=window)), key="window")
+
+        workspace = AnalysisWorkspace(
+            identifier="delivered",
+            name="Delivered",
+            description="Delivery policy",
+            source=ExampleSource(),
+            delivery=WindowDelivery(),
+            analyze=analyze,
+        )
+        page = workspace.open_item_with_values("recording", {"buffer_size": "3", "__playback_time_seconds": "1"}).page
+        self.assertEqual((2, 3, 4), page.views[0].callback({"buffer_size": "3", "__playback_time_seconds": "1"}).data[0].y)
+        self.assertTrue(page.playback.enabled)
+
     def test_analysis_can_request_framework_live_refresh(self):
         def analyze(data, ui: AnalysisContext):
             ui.refresh(every=1.0)
