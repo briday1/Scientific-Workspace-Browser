@@ -12,11 +12,15 @@ Launching the service now opens a browser interface at `/`; the JSON API remains
 - Declarative layout primitives (`tabs`, `row`, `column`, `grid`, `panel`, `split_pane`, `sidebar`, etc.).
 - Renderable dispatch for Plotly, Matplotlib, DataFrame/table/text/image/download content types.
 - Refresh manager with overlap prevention and stale-result rejection.
+- Background MATLAB and all-plot PNG export jobs with window-aware filenames.
 - Minimal HTTP service with:
   - `/health`
   - `/workspaces`
   - `/workspaces/{workspace_id}/items`
   - `/workspaces/{workspace_id}/items/{item_id}`
+  - `/workspaces/{workspace_id}/items/{item_id}/exports?format=mat|png`
+  - `/exports/{job_id}`
+  - `/exports/{job_id}/{filename}`
 - Generic example workspace.
 - File-backed SigMF viewers with packaged single-, two-, and four-channel `.sigmf-meta` / `.sigmf-data` playback examples: one native Plotly workspace and one native Matplotlib workspace.
 - PRI analysis workspace with one responsive Plotly subplot figure containing max-hold traces above time and spectrum waterfalls.
@@ -149,6 +153,8 @@ The delivery selects this with `ui.playback(mode="static" | "seek" | "live", ...
 Every opened item has **Download .mat** and camera actions in the top bar. The MATLAB file contains one `workspace_export` structure with the exact data object delivered to the analysis and every registered view across all tabs and switcher choices—not only the currently visible view. Plot traces, framework tables, text/diagnostics, layout, controls, metadata, statistics, current parameters, playback, and refresh configuration are included. The camera action renders every Plotly or Matplotlib view, including hidden tab and switcher choices, as individual PNGs in one ZIP. Both exports run on a dedicated background executor so playback and other browser requests remain responsive. Seek/live workspaces export the selected buffer; static whole-file delivery exports the complete input.
 
 Export filenames identify the item and actual delivered window, for example `capture-t0.125s-buffer0.02s-live-analysis.mat` and `capture-t0.125s-buffer0.02s-live-plots.zip`. PNG filenames repeat that context before the view name. Static delivery uses `full-static` instead of a time window.
+
+Plugins using `AnalysisWorkspace` do not implement export handling: the framework captures the object returned by the delivery policy and all values registered through `ui.plot(...)`, `ui.table(...)`, and `ui.text(...)`. NumPy arrays, dataclasses, dictionaries, sequences, and scalar values map naturally into the MAT structure. A low-level custom `Workspace` may set `PageDefinition.export_callback` when it also wants raw delivered data included; its registered views are exported regardless. Plotly PNG generation uses Kaleido and requires a Chrome/Chromium installation discoverable by Kaleido; Matplotlib PNG generation has no browser dependency.
 
 Call `ui.stat(label, value)` to add workflow-specific details such as buffer size, interval count, or sample rate to the analysis panel. The framework adds analysis runtime, view callback/serialization time, and browser-side Plotly render time automatically; all values update with each processed buffer.
 
@@ -309,26 +315,35 @@ If the package is installed, omit `path`. For an uninstalled development reposit
 
 ## Run
 
+Install the project and its plotting/export dependencies:
+
 ```bash
-PYTHONPATH=src python -m workspace_browser.web.application --host 127.0.0.1 --port 8000
+python -m pip install -e .
 ```
 
-Workspace modules reload in-process by default:
+Then launch with a profile:
+
+```bash
+workspace-browser --config browser.toml
+```
+
+Or launch the bundled defaults:
 
 ```bash
 workspace-browser
 ```
+
+The equivalent module command is:
+
+```bash
+python -m workspace_browser.web.application --host 127.0.0.1 --port 8000
+```
+
+Workspace modules reload in-process by default.
 
 Leave that server running while editing workspace analysis, plotting, or layout code. Refresh the current browser page to reload changed workspace modules and rebuild the registry without restarting the process or navigating away from the current item URL. If the new module fails to load, the page shows the error and the prior registry remains intact for the next edit-and-refresh attempt.
 
 Use `--no-reload` to disable this behavior. `--reload` remains accepted for explicit/backward-compatible development commands.
-
-Or install and run:
-
-```bash
-pip install -e .
-workspace-browser
-```
 
 ## Test
 

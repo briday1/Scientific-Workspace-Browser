@@ -396,7 +396,7 @@ class WorkspaceBrowserApp:
         control_values: dict[str, object],
         export_format: str,
     ) -> str:
-        """Run a MAT or PNG-directory export on the dedicated export executor."""
+        """Run a MAT or PNG-bundle export on the dedicated export executor."""
         if export_format not in {"mat", "png"}:
             raise ValueError("Export format must be 'mat' or 'png'")
         job_id = uuid4().hex
