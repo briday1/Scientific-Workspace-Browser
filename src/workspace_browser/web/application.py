@@ -136,8 +136,11 @@ def _make_handler(app: WorkspaceBrowserApp) -> type[BaseHTTPRequestHandler]:
             except KeyError:
                 self._write_json(404, {"error": "workspace_not_found"})
                 return
-            except Exception as exc:  # pragma: no cover
-                self._write_json(500, {"error": str(exc)})
+            except ValueError as exc:
+                self._write_json(400, {"error": "bad_request", "detail": str(exc)})
+                return
+            except Exception:  # pragma: no cover
+                self._write_json(500, {"error": "internal_error"})
                 return
 
             self._write_json(404, {"error": "not_found"})

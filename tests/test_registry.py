@@ -1,5 +1,6 @@
 import unittest
 
+from workspace_browser.core.errors import DuplicateWorkspaceError
 from workspace_browser.core.models import WorkspaceMetadata
 from workspace_browser.examples.generic import GenericExampleWorkspace
 from workspace_browser.registry.registry import WorkspaceRegistry
@@ -25,7 +26,7 @@ class RegistryTests(unittest.TestCase):
     def test_duplicate_workspace_ids_are_rejected(self):
         registry = WorkspaceRegistry()
         registry.register(GenericExampleWorkspace())
-        with self.assertRaises(Exception):
+        with self.assertRaises(DuplicateWorkspaceError):
             registry.register(DuplicateWorkspace())
 
 
