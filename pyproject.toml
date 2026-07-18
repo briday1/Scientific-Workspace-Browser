@@ -25,4 +25,5 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
+workspace_browser = ["py.typed"]
 "workspace_browser._packaging" = ["*.spec"]

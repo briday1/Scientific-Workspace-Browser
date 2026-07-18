@@ -28,6 +28,7 @@ class ItemDescriptor:
     subtitle: str | None = None
     timestamp: datetime | None = None
     tags: tuple[str, ...] = ()
+    navigation_path: tuple[str, ...] = ()
     grouping_values: dict[str, str] = field(default_factory=dict)
     summary_fields: dict[str, str] = field(default_factory=dict)
     searchable_text: str | None = None

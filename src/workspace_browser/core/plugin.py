@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from abc import abstractmethod
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
-from typing import Any, Callable, Iterable, Iterator, Protocol
+from typing import Any, Callable, Generic, Iterable, Iterator, Protocol, TypeVar, overload, runtime_checkable
 
 from plotly.colors import get_colorscale
 
@@ -30,20 +31,38 @@ class DataResource:
     timestamp: datetime | None = None
     tags: tuple[str, ...] = ()
     summary: dict[str, str] = field(default_factory=dict)
+    navigation_path: tuple[str, ...] | None = None
 
 
-class DataSource(Protocol):
-    """The only I/O contract required by the high-level plugin API."""
+SourceData_co = TypeVar("SourceData_co", covariant=True)
+SourceData_contra = TypeVar("SourceData_contra", contravariant=True)
+DeliveredData_co = TypeVar("DeliveredData_co", covariant=True)
+SourceData = TypeVar("SourceData")
+DeliveredData = TypeVar("DeliveredData")
+LoadedData = TypeVar("LoadedData")
 
+
+def _missing_methods(value: object, names: tuple[str, ...]) -> list[str]:
+    return [f"{name}()" for name in names if not callable(getattr(value, name, None))]
+
+
+@runtime_checkable
+class DataSource(Protocol[SourceData_co]):
+    """Typed source contract: discover resources, then open one source value."""
+
+    @abstractmethod
     def discover(self) -> Iterable[DataResource]: ...
 
-    def open(self, resource: DataResource) -> Any: ...
+    @abstractmethod
+    def open(self, resource: DataResource) -> SourceData_co: ...
 
 
-class DataDelivery(Protocol):
-    """Framework-side policy that prepares source data for one analysis run."""
+@runtime_checkable
+class DataDelivery(Protocol[SourceData_contra, DeliveredData_co]):
+    """Typed delivery contract between source I/O and the analysis function."""
 
-    def prepare(self, source_data: Any, context: AnalysisContext) -> Any: ...
+    @abstractmethod
+    def prepare(self, source_data: SourceData_contra, ui: AnalysisContext) -> DeliveredData_co: ...
 
 
 @dataclass(frozen=True)
@@ -68,7 +87,7 @@ class TraceStyle:
         return {} if self.marker == "none" else {"color": self.color, "symbol": self.marker}
 
 
-class DirectorySource:
+class DirectorySource(Generic[LoadedData]):
     """Framework-owned discovery for the common directory-of-inputs case."""
 
     def __init__(
@@ -76,7 +95,7 @@ class DirectorySource:
         directory: str | Path,
         *,
         pattern: str | tuple[str, ...],
-        loader: Callable[[Path], Any],
+        loader: Callable[[Path], LoadedData],
         describe: Callable[[Path], DataResource] | None = None,
         recursive: bool = False,
     ) -> None:
@@ -93,9 +112,17 @@ class DirectorySource:
             for path in (self.directory.rglob(pattern) if self.recursive else self.directory.glob(pattern))
             if path.is_file()
         }
-        return [self.describe(path) if self.describe else self._default_resource(path) for path in sorted(paths)]
+        resources = []
+        for path in sorted(paths):
+            resource = self.describe(path) if self.describe else self._default_resource(path)
+            if resource.navigation_path is None:
+                parent = path.relative_to(self.directory).parent
+                navigation_path = () if parent == Path(".") else parent.parts
+                resource = replace(resource, navigation_path=navigation_path)
+            resources.append(resource)
+        return resources
 
-    def open(self, resource: DataResource) -> Any:
+    def open(self, resource: DataResource) -> LoadedData:
         return self.loader(Path(resource.source))
 
     def _default_resource(self, path: Path) -> DataResource:
@@ -794,19 +821,59 @@ class AnalysisContext:
 class AnalysisWorkspace:
     """Adapts a source + analysis script to the full Workspace contract."""
 
+    @overload
     def __init__(
         self,
         *,
         identifier: str,
         name: str,
         description: str,
-        source: DataSource,
+        source: DataSource[SourceData],
+        analyze: Callable[[SourceData, AnalysisContext], None],
+        delivery: None = None,
+        version: str = "0.1.0",
+        category: str | None = None,
+        tags: tuple[str, ...] = (),
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        *,
+        identifier: str,
+        name: str,
+        description: str,
+        source: DataSource[SourceData],
+        analyze: Callable[[DeliveredData, AnalysisContext], None],
+        delivery: DataDelivery[SourceData, DeliveredData],
+        version: str = "0.1.0",
+        category: str | None = None,
+        tags: tuple[str, ...] = (),
+    ) -> None: ...
+
+    def __init__(
+        self,
+        *,
+        identifier: str,
+        name: str,
+        description: str,
+        source: DataSource[Any],
         analyze: Callable[[Any, AnalysisContext], None],
-        delivery: DataDelivery | None = None,
+        delivery: DataDelivery[Any, Any] | None = None,
         version: str = "0.1.0",
         category: str | None = None,
         tags: tuple[str, ...] = (),
     ) -> None:
+        if not isinstance(source, DataSource):
+            missing = _missing_methods(source, ("discover", "open"))
+            detail = f"; missing {', '.join(missing)}" if missing else ""
+            raise TypeError(f"source must implement DataSource.discover() and DataSource.open(resource){detail}")
+        if delivery is not None and not isinstance(delivery, DataDelivery):
+            missing = _missing_methods(delivery, ("prepare",))
+            detail = f"; missing {', '.join(missing)}" if missing else ""
+            raise TypeError(f"delivery must implement DataDelivery.prepare(source_data, ui){detail}")
+        if not callable(analyze):
+            raise TypeError("analyze must be callable as analyze(delivered_data, ui)")
         self.metadata = WorkspaceMetadata(identifier, name, description, version, category, tags)
         self.source = source
         self.analyze = analyze
@@ -815,7 +882,21 @@ class AnalysisWorkspace:
         self._cache_lock = RLock()
 
     def _resources(self) -> dict[str, DataResource]:
-        return {resource.identifier: resource for resource in self.source.discover()}
+        discovered = list(self.source.discover())
+        for index, resource in enumerate(discovered):
+            if not isinstance(resource, DataResource):
+                raise TypeError(
+                    f"source.discover() item {index} must be DataResource, got {type(resource).__name__}"
+                )
+        resources = {resource.identifier: resource for resource in discovered}
+        if len(resources) != len(discovered):
+            duplicates = sorted(
+                identifier
+                for identifier in {resource.identifier for resource in discovered}
+                if sum(resource.identifier == identifier for resource in discovered) > 1
+            )
+            raise ValueError(f"source.discover() returned duplicate identifiers: {', '.join(duplicates)}")
+        return resources
 
     def discover_items(self) -> list[ItemDescriptor]:
         return [
@@ -826,6 +907,7 @@ class AnalysisWorkspace:
                 source_reference=str(resource.source),
                 timestamp=resource.timestamp,
                 tags=resource.tags,
+                navigation_path=resource.navigation_path or (),
                 summary_fields=resource.summary,
             )
             for resource in self._resources().values()

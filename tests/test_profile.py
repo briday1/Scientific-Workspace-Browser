@@ -66,6 +66,34 @@ class BrowserProfileTests(unittest.TestCase):
                     [("lab-captures", "Lab captures"), ("field-tests", "Field tests")],
                     [(workspace["id"], workspace["name"]) for workspace in app.list_workspaces()],
                 )
+
+                profile_path.write_text(
+                    "[browser]\n"
+                    "title = 'Reloaded Browser'\n"
+                    "subtitle = 'Updated without restart'\n"
+                    "[[workspaces]]\n"
+                    "use = 'radar-analysis'\n"
+                    "path = './radar-repository'\n"
+                    "id = 'reloaded-captures'\n"
+                    "name = 'Reloaded captures'\n",
+                    encoding="utf-8",
+                )
+                app_identity = id(app)
+                self.assertTrue(app.reload_browser_profile())
+                self.assertEqual(app_identity, id(app))
+                self.assertEqual("Reloaded Browser", app.title)
+                self.assertEqual("Updated without restart", app.subtitle)
+                self.assertEqual(
+                    [("reloaded-captures", "Reloaded captures")],
+                    [(workspace["id"], workspace["name"]) for workspace in app.list_workspaces()],
+                )
+                profile_path.write_text("[[workspaces]]\nuse = 'does-not-exist'\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unknown workspace 'does-not-exist'"):
+                    app.reload_browser_profile()
+                self.assertEqual(
+                    [("reloaded-captures", "Reloaded captures")],
+                    [(workspace["id"], workspace["name"]) for workspace in app.list_workspaces()],
+                )
             finally:
                 sys.modules.pop(package_name, None)
 

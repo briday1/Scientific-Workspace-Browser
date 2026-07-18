@@ -37,6 +37,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("summary", payload["page"]["views"])
         self.assertEqual("markdown", payload["page"]["rendered_views"][0]["kind"])
         self.assertFalse(payload["page"]["logging"]["enabled"])
+        self.assertNotIn("Analysis runtime", payload["page"]["statistics"])
+        self.assertRegex(payload["page"]["runtime_statistics"]["Analysis runtime"], r"^\d+\.\d ms$")
+        self.assertRegex(payload["page"]["runtime_statistics"]["View callbacks"], r"^\d+\.\d ms$")
 
     def test_workspace_controls_change_rendered_playback(self):
         app = self.create_example_app()
@@ -49,6 +52,39 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(1, len(page["controls"]))
         playback = next(view for view in page["rendered_views"] if view["name"] == "signal")["value"]
         self.assertEqual([2.0, 4.0, 6.0, 8.0], playback["data"][0]["y"])
+
+    def test_recursive_directory_source_is_browsed_as_folders(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "root.dat").write_text("root", encoding="utf-8")
+            (root / "campaign-a").mkdir()
+            (root / "campaign-a" / "capture.dat").write_text("capture", encoding="utf-8")
+            (root / "campaign-a" / "day-2").mkdir()
+            (root / "campaign-a" / "day-2" / "capture.dat").write_text("nested", encoding="utf-8")
+
+            def analyze(data, ui):
+                with ui.tab("Data"):
+                    ui.text(data, key="data")
+
+            workspace = AnalysisWorkspace(
+                identifier="nested-files",
+                name="Nested files",
+                description="Nested directory fixture",
+                source=DirectorySource(root, pattern="*.dat", loader=lambda path: path.read_text(), recursive=True),
+                analyze=analyze,
+            )
+            app = WorkspaceBrowserApp()
+            app.register_workspace(workspace)
+
+            root_listing = app.browse_items("nested-files", {})
+            self.assertEqual([{"name": "campaign-a", "path": ["campaign-a"]}], root_listing["directories"])
+            self.assertEqual(["root.dat"], [item["id"] for item in root_listing["items"]])
+
+            campaign = app.browse_items("nested-files", {"directory": ["campaign-a"]})
+            self.assertEqual([{"name": "day-2", "path": ["campaign-a", "day-2"]}], campaign["directories"])
+            self.assertEqual(["campaign-a::capture.dat"], [item["id"] for item in campaign["items"]])
+            opened = app.open_item("nested-files", "campaign-a::capture.dat")
+            self.assertEqual(["campaign-a"], opened["item"]["navigation_path"])
 
     def test_seekable_file_item_writes_progress_log_beside_data(self):
         with TemporaryDirectory() as directory:
@@ -127,9 +163,26 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("requestFullscreen()", body)
         self.assertIn("fullscreenchange", body)
         self.assertIn("catalog()", body)
+        self.assertIn('id="workspace-search"', body)
+        self.assertIn('placeholder="Search workspaces…"', body)
+        self.assertIn("No matching workspaces.", body)
+        self.assertIn("${w.name} ${w.description||''} ${w.category||''}", body)
+        self.assertNotIn('id="reload-config"', body)
+        self.assertNotIn("Reload browser.toml", body)
+        self.assertNotIn('id="refresh"', body)
+        self.assertNotIn("Refresh list", body)
+        self.assertIn("data-folder", body)
+        self.assertIn("data-directory-level", body)
+        self.assertIn("parts[2]==='browse'", body)
+        self.assertIn("params.append('directory',segment)", body)
         self.assertNotIn("applyTheme();boot()", body)
-        self.assertIn("if(activeThemeRefresh)await activeThemeRefresh()", body)
+        self.assertIn("if(activeThemeRefresh)await activeThemeRefresh();else applyTheme()", body)
         self.assertIn("activeThemeRefresh=async()=>", body)
+        self.assertIn("commitTheme(render)", body)
+        self.assertIn("refresh(true,true)", body)
+        self.assertIn("document.startViewTransition(update)", body)
+        self.assertIn("preloadMatplotlibViews(p.rendered_views)", body)
+        self.assertNotIn("refreshTheme(){applyTheme();", body)
         self.assertIn("if(isWindowed&&applied)startFrameworkWindowed", body)
         self.assertIn('type="color"', body)
         self.assertIn("'<strong>$1</strong>'", body)
@@ -158,8 +211,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-sidebar-toggle', body)
         self.assertIn("bindSidebar()", body)
         self.assertIn('class="view-stats"', body)
+        self.assertIn('<h2>View details</h2>', body)
+        self.assertIn('<h2>Runtime</h2>', body)
+        self.assertIn('id="runtime-stats"', body)
         self.assertIn('data-client-stat="plotly-runtime"', body)
-        self.assertIn("updateStatistics(p.statistics)", body)
+        self.assertIn("updateStatistics(p.statistics,p.runtime_statistics)", body)
         self.assertIn('class="layout-tab-pane', body)
         self.assertIn("bindLayoutTabs()", body)
         self.assertIn("__include_static_views:includeStatic", body)
@@ -189,6 +245,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="windowed-end"', body)
         self.assertIn('id="windowed-total"', body)
         self.assertIn('id="windowed-width"', body)
+        self.assertIn('class="windowed-track-stack ${', body)
+        self.assertIn('class="windowed-separator" aria-hidden="true">•</span>', body)
+        self.assertNotIn('s buffer)</label>', body)
         self.assertIn("const editEndpoint=(kind,value)=>", body)
         self.assertIn("const editWidth=value=>", body)
         self.assertIn("__window_start_seconds:windowStart", body)
@@ -344,6 +403,38 @@ class WebAppTests(unittest.TestCase):
             finally:
                 sys.path.remove(directory)
                 sys.modules.pop(module_name, None)
+
+    def test_page_reload_reloads_browser_profile(self):
+        app = Mock()
+        app.title = "Reloaded title"
+        app.subtitle = "Reloaded subtitle"
+        app.config_path = Path("browser.toml")
+        handler_type = _make_handler(app)
+        handler = handler_type.__new__(handler_type)
+        handler.path = "/"
+        handler._write_html = Mock()
+
+        handler.do_GET()
+
+        app.reload_browser_profile.assert_called_once_with()
+        body = handler._write_html.call_args.args[0]
+        self.assertIn("Reloaded title", body)
+        self.assertIn("Reloaded subtitle", body)
+
+    def test_workspace_page_reload_reloads_browser_profile(self):
+        app = Mock()
+        app.title = "Workspace browser"
+        app.subtitle = "Workspace list"
+        app.config_path = Path("browser.toml")
+        handler_type = _make_handler(app)
+        handler = handler_type.__new__(handler_type)
+        handler.path = "/workspace/test-workspace"
+        handler._write_html = Mock()
+
+        handler.do_GET()
+
+        app.reload_browser_profile.assert_called_once_with()
+        handler._write_html.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -32,23 +32,85 @@ Most workspace packages implement one factory and two ordinary functions:
 
 The data passed between these hooks is owned by the workspace package. The framework does not require a particular file format, array shape, reader, or analysis library.
 
+### Typed lifecycle contracts
+
+`DataSource` and `DataDelivery` are public, generic, runtime-checkable
+interfaces. Their type parameters describe the complete data path:
+
+```text
+DataSource[SourceData]
+    discover() -> Iterable[DataResource]
+    open(resource) -> SourceData
+                           │
+                           ▼
+DataDelivery[SourceData, DeliveredData]       optional
+    prepare(source_data, ui) -> DeliveredData
+                           │
+                           ▼
+analyze(delivered_data: DeliveredData, ui: AnalysisContext) -> None
+```
+
+`AnalysisWorkspace` has typed constructor overloads connecting these stages. A
+type checker therefore catches a delivery that expects the wrong reader type or
+an analysis function that expects something other than the delivery output.
+The installed package includes a `py.typed` marker, so these checks also work
+when `workspace-browser` is installed from a wheel.
+
+Implementations may explicitly inherit the interfaces, which is recommended
+for readability:
+
+```python
+from collections.abc import Iterable
+
+from workspace_browser.plugin import AnalysisContext, DataDelivery, DataResource, DataSource
+
+
+class MySource(DataSource[Recording]):
+    def discover(self) -> Iterable[DataResource]:
+        ...
+
+    def open(self, resource: DataResource) -> Recording:
+        ...
+
+
+class WindowDelivery(DataDelivery[Recording, SampleWindow]):
+    def prepare(
+        self,
+        recording: Recording,
+        ui: AnalysisContext,
+    ) -> SampleWindow:
+        ...
+```
+
+Explicitly inherited methods are abstract, so an incomplete subclass cannot be
+instantiated. Inheritance is not required: structurally compatible objects also
+satisfy the interfaces. At runtime, `AnalysisWorkspace` validates that sources provide
+`discover()` and `open()`, deliveries provide `prepare()`, analysis is callable,
+discovery returns `DataResource` objects, and resource identifiers are unique.
+Failures identify the missing method or invalid discovery value directly.
+
 ### Minimal file-backed workspace
 
 ```python
 # src/my_workspace/workspace.py
 import json
 from pathlib import Path
+from typing import TypedDict
 
 import plotly.graph_objects as go
 
-from workspace_browser.plugin import AnalysisWorkspace, DirectorySource
+from workspace_browser.plugin import AnalysisContext, AnalysisWorkspace, DirectorySource
 
 
-def load_result(path: Path):
+class ResultFile(TypedDict):
+    values: list[float]
+
+
+def load_result(path: Path) -> ResultFile:
     return json.loads(path.read_text())
 
 
-def analyze(result, ui):
+def analyze(result: ResultFile, ui: AnalysisContext) -> None:
     scale = ui.number("scale", label="Scale", default=1.0, step=0.1)
     values = [scale * value for value in result["values"]]
 
@@ -70,6 +132,12 @@ def create_workspace(config):
         analyze=analyze,
     )
 ```
+
+Set `recursive=True` on `DirectorySource` to preserve nested directories in the
+browser. The framework derives folder breadcrumbs from each file's path relative
+to the source root; files are not flattened and directories are not presented as
+fake analysis items. A custom source can provide the same behavior by setting
+`DataResource(navigation_path=("campaign", "day-2"), ...)`.
 
 Advertise the factory in the workspace package:
 
@@ -108,22 +176,45 @@ id = "results"
 name = "Results"
 ```
 
-The browser adds its `src` directory and reloads changed workspace modules when the page is refreshed. Use `--no-reload` to disable this behavior. A direct `module:factory` string is also accepted in `use`.
+The browser adds its `src` directory. Reloading the browser page reparses
+`browser.toml` and applies added, removed, or reconfigured workspace entries
+without restarting the server. Changed workspace modules are reloaded as part
+of the same request; use `--no-reload` to disable subsequent automatic module
+watching. A direct `module:factory` string is also accepted in `use`.
 
 ## Data delivery
 
 Without a delivery object, `analyze` receives exactly what the source opened. A delivery object can prepare a different value while leaving analysis unchanged:
 
 ```python
-class FrameDelivery:
-    def prepare(self, recording, ui):
+from dataclasses import dataclass
+
+from workspace_browser.plugin import AnalysisContext, DataDelivery
+
+
+@dataclass(frozen=True)
+class SampleWindow:
+    start_seconds: float
+    samples: list[complex]
+
+
+class FrameDelivery(DataDelivery[Recording, SampleWindow]):
+    def prepare(
+        self,
+        recording: Recording,
+        ui: AnalysisContext,
+    ) -> SampleWindow:
         frame_seconds = ui.number("frame_seconds", default=0.1, minimum=0.001)
         position = ui.playback(
             mode="seek",
             duration=max(0.0, recording.duration - frame_seconds),
             step=0.01,
         )
-        return recording.read(position, frame_seconds)
+        return SampleWindow(position, recording.read(position, frame_seconds))
+
+
+def analyze(window: SampleWindow, ui: AnalysisContext) -> None:
+    ...
 ```
 
 Pass it to `AnalysisWorkspace(delivery=FrameDelivery(), ...)`. The framework calls `source.open`, then `delivery.prepare`, then `analyze` for every requested state.

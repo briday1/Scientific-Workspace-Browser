@@ -4,7 +4,15 @@ from tempfile import TemporaryDirectory
 
 import plotly.graph_objects as go
 
-from workspace_browser.plugin import AnalysisContext, AnalysisWorkspace, DataResource, DirectorySource, Segment
+from workspace_browser.plugin import (
+    AnalysisContext,
+    AnalysisWorkspace,
+    DataDelivery,
+    DataResource,
+    DataSource,
+    DirectorySource,
+    Segment,
+)
 
 
 class ExampleSource:
@@ -16,6 +24,88 @@ class ExampleSource:
 
 
 class PluginAuthoringTests(unittest.TestCase):
+    def test_public_source_and_delivery_protocols_are_runtime_checkable(self):
+        class TypedDelivery(DataDelivery[list[int], tuple[int, ...]]):
+            def prepare(self, source_data: list[int], ui: AnalysisContext) -> tuple[int, ...]:
+                return tuple(source_data)
+
+        self.assertIsInstance(ExampleSource(), DataSource)
+        self.assertIsInstance(TypedDelivery(), DataDelivery)
+
+        class IncompleteDelivery(DataDelivery[list[int], tuple[int, ...]]):
+            pass
+
+        with self.assertRaisesRegex(TypeError, r"abstract class IncompleteDelivery.*prepare"):
+            IncompleteDelivery()
+
+    def test_workspace_rejects_incomplete_contracts_with_actionable_errors(self):
+        class MissingOpen:
+            def discover(self):
+                return []
+
+        with self.assertRaisesRegex(TypeError, r"source must implement .*missing open\(\)"):
+            AnalysisWorkspace(
+                identifier="invalid-source",
+                name="Invalid source",
+                description="Missing open",
+                source=MissingOpen(),
+                analyze=lambda data, ui: None,
+            )
+
+        with self.assertRaisesRegex(TypeError, r"delivery must implement .*missing prepare\(\)"):
+            AnalysisWorkspace(
+                identifier="invalid-delivery",
+                name="Invalid delivery",
+                description="Missing prepare",
+                source=ExampleSource(),
+                delivery=object(),
+                analyze=lambda data, ui: None,
+            )
+
+        with self.assertRaisesRegex(TypeError, r"analyze must be callable"):
+            AnalysisWorkspace(
+                identifier="invalid-analysis",
+                name="Invalid analysis",
+                description="Non-callable analysis",
+                source=ExampleSource(),
+                analyze=None,
+            )
+
+    def test_source_discovery_validates_resources_and_unique_identifiers(self):
+        class InvalidResources:
+            def discover(self):
+                return ["not a resource"]
+
+            def open(self, resource):
+                return resource
+
+        invalid = AnalysisWorkspace(
+            identifier="invalid-resources",
+            name="Invalid resources",
+            description="Wrong discovery value",
+            source=InvalidResources(),
+            analyze=lambda data, ui: None,
+        )
+        with self.assertRaisesRegex(TypeError, r"item 0 must be DataResource, got str"):
+            invalid.discover_items()
+
+        class DuplicateResources:
+            def discover(self):
+                return [DataResource("same", "First", 1), DataResource("same", "Second", 2)]
+
+            def open(self, resource):
+                return resource.source
+
+        duplicate = AnalysisWorkspace(
+            identifier="duplicate-resources",
+            name="Duplicate resources",
+            description="Duplicate discovery identifiers",
+            source=DuplicateResources(),
+            analyze=lambda data, ui: None,
+        )
+        with self.assertRaisesRegex(ValueError, r"duplicate identifiers: same"):
+            duplicate.discover_items()
+
     def test_directory_source_creates_listing_rows_and_opens_selected_file(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

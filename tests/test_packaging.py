@@ -3,6 +3,9 @@ from importlib.resources import files
 
 
 class PackagingTests(unittest.TestCase):
+    def test_public_typing_marker_is_installed_as_package_data(self):
+        self.assertTrue(files("workspace_browser").joinpath("py.typed").is_file())
+
     def test_standalone_build_support_is_installed_as_package_data(self):
         resources = files("workspace_browser._packaging")
         self.assertTrue(resources.joinpath("workspace-browser.spec").is_file())
