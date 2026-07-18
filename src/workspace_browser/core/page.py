@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any, Callable, Literal
 
 from .layout import LayoutNode, validate_layout
 from .models import ItemDescriptor, RefreshConfiguration
 
 
-PlaybackMode = Literal["static", "seek", "live"]
+PlaybackMode = Literal["static", "seek", "live", "windowed"]
 
 
 @dataclass(frozen=True)
@@ -19,9 +20,14 @@ class PlaybackConfiguration:
     step_seconds: float = 0.35
     refresh_interval_seconds: float | None = None
     loop: bool = True
+    window_start_seconds: float = 0.0
+    window_end_seconds: float = 0.0
+    minimum_window_seconds: float = 0.0
+    overview_values: tuple[float, ...] = ()
+    overview_label: str | None = None
 
     def __post_init__(self) -> None:
-        if self.mode not in {"static", "seek", "live"}:
+        if self.mode not in {"static", "seek", "live", "windowed"}:
             raise ValueError(f"Unknown playback mode: {self.mode}")
         if self.mode != "static" and self.duration_seconds < 0:
             raise ValueError("Playback duration cannot be negative")
@@ -29,6 +35,17 @@ class PlaybackConfiguration:
             raise ValueError("Playback step must be positive")
         if self.refresh_interval_seconds is not None and self.refresh_interval_seconds <= 0:
             raise ValueError("Playback refresh interval must be positive")
+        if self.mode == "windowed":
+            if self.duration_seconds <= 0:
+                raise ValueError("Windowed duration must be positive")
+            if len(self.overview_values) < 2:
+                raise ValueError("Windowed playback requires at least two overview values")
+            if not all(isfinite(value) for value in self.overview_values):
+                raise ValueError("Windowed overview values must be finite")
+            if not 0 <= self.window_start_seconds < self.window_end_seconds <= self.duration_seconds:
+                raise ValueError("Windowed selection must lie within the duration")
+            if not 0 < self.minimum_window_seconds <= self.duration_seconds:
+                raise ValueError("Windowed minimum size must be positive and within the duration")
 
 
 @dataclass(frozen=True)

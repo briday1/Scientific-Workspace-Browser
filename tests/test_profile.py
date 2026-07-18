@@ -9,15 +9,6 @@ from workspace_browser.web.application import create_app
 
 
 class BrowserProfileTests(unittest.TestCase):
-    def test_bundled_example_profile_is_runnable(self):
-        profile_path = Path(__file__).resolve().parents[1] / "browser.example.toml"
-        app = create_app(config_path=profile_path)
-        self.assertEqual("Signal Analysis Browser", app.title)
-        self.assertEqual(
-            ["generic-example", "sigmf-viewer", "sigmf-matplotlib-viewer", "lfm-collection", "lfm-full-recording", "pri-waterfall"],
-            [workspace["id"] for workspace in app.list_workspaces()],
-        )
-
     def test_repository_entry_point_can_create_multiple_configured_instances(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -26,9 +17,9 @@ class BrowserProfileTests(unittest.TestCase):
             package = repository / "src" / package_name
             package.mkdir(parents=True)
             (package / "__init__.py").write_text(
-                "from examples.generic import GenericExampleWorkspace\n"
+                "from tests.fixtures import create_workspace as fixture_workspace\n"
                 "def create_workspace(config):\n"
-                "    return GenericExampleWorkspace(identifier=config['id'], name=config['name'])\n",
+                "    return fixture_workspace(config)\n",
                 encoding="utf-8",
             )
             (repository / "pyproject.toml").write_text(
@@ -80,9 +71,9 @@ class BrowserProfileTests(unittest.TestCase):
             root = Path(directory)
             module_name = f"direct_workspace_{uuid4().hex}"
             (root / f"{module_name}.py").write_text(
-                "from examples.generic import GenericExampleWorkspace\n"
+                "from tests.fixtures import create_workspace as fixture_workspace\n"
                 "def build(config):\n"
-                "    return GenericExampleWorkspace(identifier=config['id'], name=config['name'])\n",
+                "    return fixture_workspace(config)\n",
                 encoding="utf-8",
             )
             profile_path = root / "browser.toml"

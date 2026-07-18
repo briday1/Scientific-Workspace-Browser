@@ -359,6 +359,47 @@ class AnalysisContext:
             return 0.0
         return duration if mode == "live" and self.following_live else self.time
 
+    def windowed(
+        self,
+        *,
+        duration: float,
+        default_window: float,
+        overview: Iterable[float],
+        overview_label: str | None = None,
+        minimum_window: float | None = None,
+        step: float | None = None,
+    ) -> tuple[float, float]:
+        """Select a movable interval over a plugin-defined full-record overview."""
+        duration = float(duration)
+        default_window = float(default_window)
+        minimum = float(minimum_window if minimum_window is not None else (step or default_window / 20))
+        if duration <= 0:
+            raise ValueError("Windowed duration must be positive")
+        if default_window <= 0:
+            raise ValueError("Default window must be positive")
+        minimum = min(duration, max(minimum, 1e-12))
+        default_end = min(duration, max(minimum, default_window))
+        try:
+            start = float(self.values.get("__window_start_seconds", 0.0))
+            end = float(self.values.get("__window_end_seconds", default_end))
+        except (TypeError, ValueError):
+            start, end = 0.0, default_end
+        start = min(duration - minimum, max(0.0, start))
+        end = min(duration, max(start + minimum, end))
+        values = tuple(float(value) for value in overview)
+        self.playback_config = PlaybackConfiguration(
+            mode="windowed",
+            duration_seconds=duration,
+            step_seconds=float(step or minimum),
+            loop=False,
+            window_start_seconds=start,
+            window_end_seconds=end,
+            minimum_window_seconds=minimum,
+            overview_values=values,
+            overview_label=overview_label,
+        )
+        return start, end
+
     def refresh(self, *, every: float, timeout: float = 30.0) -> None:
         """Ask the framework to rerun this analysis for a live source."""
         self.refresh_config = RefreshConfiguration(enabled=True, interval_seconds=every, timeout_seconds=timeout)

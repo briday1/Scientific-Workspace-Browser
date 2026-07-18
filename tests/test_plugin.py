@@ -89,6 +89,45 @@ class PluginAuthoringTests(unittest.TestCase):
         self.assertEqual("seek", page.playback.mode)
         self.assertEqual([2, 3, 4], page.export_callback({"buffer_size": "3", "__playback_time_seconds": "1"}))
 
+    def test_windowed_delivery_receives_framework_selected_interval(self):
+        class WindowedDelivery:
+            def prepare(self, source_data, ui):
+                start, end = ui.windowed(
+                    duration=4.0,
+                    default_window=2.0,
+                    minimum_window=0.5,
+                    step=0.25,
+                    overview=(0.1, 0.8, 0.2, 1.0),
+                    overview_label="Peak power",
+                )
+                return source_data[round(start) : round(end)]
+
+        def analyze(window, ui):
+            with ui.tab("Window"):
+                ui.plot(go.Figure(go.Scatter(y=window)), key="window")
+
+        workspace = AnalysisWorkspace(
+            identifier="windowed",
+            name="Windowed",
+            description="Window selection",
+            source=ExampleSource(),
+            delivery=WindowedDelivery(),
+            analyze=analyze,
+        )
+        values = {"__window_start_seconds": "1", "__window_end_seconds": "3"}
+        page = workspace.open_item_with_values("recording", values).page
+        self.assertEqual("windowed", page.playback.mode)
+        self.assertEqual((1.0, 3.0), (page.playback.window_start_seconds, page.playback.window_end_seconds))
+        self.assertEqual("Peak power", page.playback.overview_label)
+        self.assertEqual((0.1, 0.8, 0.2, 1.0), page.playback.overview_values)
+        self.assertEqual((2, 3), page.views[0].callback(values).data[0].y)
+        self.assertEqual([2, 3], page.export_callback(values))
+
+    def test_windowed_overview_rejects_nonfinite_statistics(self):
+        ui = AnalysisContext({})
+        with self.assertRaisesRegex(ValueError, "finite"):
+            ui.windowed(duration=1.0, default_window=0.1, overview=(0.0, float("nan")))
+
     def test_analysis_can_request_framework_live_refresh(self):
         def analyze(data, ui: AnalysisContext):
             ui.refresh(every=1.0)

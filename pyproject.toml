@@ -16,9 +16,13 @@ build = ["certifi>=2024.2.2", "pyinstaller>=6.0"]
 
 [project.scripts]
 workspace-browser = "workspace_browser.web.application:main"
+workspace-browser-build = "workspace_browser._packaging.build:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"workspace_browser._packaging" = ["*.spec"]

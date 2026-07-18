@@ -16,8 +16,6 @@ if manifest.is_file() and not is_chromium_wrapper:
     if archive.is_file() and not chrome_root.exists():
         with zipfile.ZipFile(archive) as chrome_zip:
             chrome_zip.extractall(chrome_root)
-            # Zip extraction does not consistently restore Unix executable
-            # bits, which Chrome and its helper processes require.
             for member in chrome_zip.infolist():
                 mode = member.external_attr >> 16
                 extracted = chrome_root / member.filename

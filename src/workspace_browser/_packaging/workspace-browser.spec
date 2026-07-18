@@ -1,10 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""One-file PyInstaller build for Scientific Workspace Browser.
+"""One-file PyInstaller build for Scientific Workspace Browser."""
 
-By default this downloads and bundles Chrome for Testing for Kaleido. Set
-SWB_BUNDLE_CHROME=0 while building to rely on Chrome/Chromium on the target.
-"""
-
+import importlib.util
 from pathlib import Path
 import os
 import shutil
@@ -12,17 +9,18 @@ import shutil
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 
-project_root = Path(SPECPATH).resolve()
-source_root = project_root / "src"
-build_support = project_root / ".pyinstaller"
+package_spec = importlib.util.find_spec("workspace_browser")
+if package_spec is None or not package_spec.submodule_search_locations:
+    raise RuntimeError("workspace_browser must be installed before building")
+package_root = Path(next(iter(package_spec.submodule_search_locations))).resolve()
+source_root = package_root.parent
+build_support = Path.cwd() / ".pyinstaller"
 build_support.mkdir(parents=True, exist_ok=True)
 
 datas = []
 binaries = []
 hiddenimports = collect_submodules("workspace_browser")
 
-# Plotly and Kaleido load portions of their implementation and resources
-# dynamically. Explicit collection keeps those paths available when frozen.
 for package in ("workspace_browser", "plotly", "kaleido", "choreographer"):
     package_datas, package_binaries, package_hidden = collect_all(
         package,
@@ -32,7 +30,6 @@ for package in ("workspace_browser", "plotly", "kaleido", "choreographer"):
     binaries += package_binaries
     hiddenimports += package_hidden
 
-# Entry-point discovery and runtime version checks use distribution metadata.
 for distribution in (
     "workspace-browser",
     "plotly",
@@ -45,8 +42,6 @@ for distribution in (
     try:
         datas += copy_metadata(distribution, recursive=True)
     except Exception:
-        # Some editable or distro-managed build environments omit metadata;
-        # Analysis still collects the importable package itself.
         pass
 
 runtime_hooks = []
@@ -55,8 +50,6 @@ if bundle_chrome:
     try:
         import certifi
 
-        # Some framework Python installs do not inherit the operating system's
-        # CA chain. Keep verification enabled while downloading Chrome.
         os.environ.setdefault("SSL_CERT_FILE", certifi.where())
     except ImportError:
         pass
@@ -68,9 +61,6 @@ if bundle_chrome:
     chrome_executable = Path(pio.get_chrome(chrome_cache)).resolve()
     relative_executable = chrome_executable.relative_to(chrome_cache)
     chrome_distribution_name = relative_executable.parts[0]
-
-    # Treat Chrome as an opaque archive. On macOS its .app contains a nested
-    # .framework that PyInstaller otherwise misclassifies during Analysis.
     chrome_archive = Path(
         shutil.make_archive(
             str(build_support / "kaleido_chrome"),
@@ -79,17 +69,13 @@ if bundle_chrome:
             base_dir=chrome_distribution_name,
         )
     )
-
     manifest = build_support / "kaleido_chrome_executable.txt"
     manifest.write_text(relative_executable.as_posix(), encoding="utf-8")
-    datas += [
-        (str(chrome_archive), "."),
-        (str(manifest), "."),
-    ]
-    runtime_hooks.append(str(project_root / "packaging" / "runtime_hook_kaleido.py"))
+    datas += [(str(chrome_archive), "."), (str(manifest), ".")]
+    runtime_hooks.append(str(package_root / "_packaging" / "runtime_hook_kaleido.py"))
 
 a = Analysis(
-    [str(source_root / "workspace_browser" / "web" / "application.py")],
+    [str(package_root / "web" / "application.py")],
     pathex=[str(source_root)],
     binaries=binaries,
     datas=datas,
