@@ -93,6 +93,7 @@ class ControlSpec:
     group: str | None = None
     picker: str | None = None
     picker_label: str | None = None
+    option_previews: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)

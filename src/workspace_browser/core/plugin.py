@@ -8,6 +8,8 @@ from threading import RLock
 from time import perf_counter
 from typing import Any, Callable, Iterable, Iterator, Protocol
 
+from plotly.colors import get_colorscale
+
 from .layout import LayoutNode, container, control_slot, view_slot
 from .models import ItemDescriptor, RefreshConfiguration, RefreshResult, WorkspaceMetadata
 from .page import ControlSpec, OpenedItem, PageDefinition, PlaybackConfiguration, PlaybackMode, Segment, ViewSpec
@@ -258,6 +260,85 @@ class AnalysisContext:
         value = str(self.values.setdefault(name, default))
         return value if _is_hex_color(value) else default
 
+    def colormap(
+        self,
+        name: str,
+        *,
+        default: str,
+        options: Iterable[str],
+        label: str | None = None,
+        group: str = "Plot styles",
+    ) -> str:
+        """Add a gradient-preview picker for a chosen set of Plotly colormaps."""
+        choices = tuple(str(option) for option in options)
+        if not choices:
+            raise ValueError("Colormap options cannot be empty")
+        if default not in choices:
+            raise ValueError("The default colormap must be included in options")
+        previews = []
+        for choice in choices:
+            try:
+                previews.append(
+                    tuple(f"{entry[1]} {float(entry[0]) * 100:g}%" for entry in get_colorscale(choice))
+                )
+            except Exception as error:
+                raise ValueError(f"Unknown Plotly colormap: {choice}") from error
+        self._add_control(
+            ControlSpec(
+                name=name,
+                control_type="colormap",
+                label=label,
+                default=default,
+                options=choices,
+                group=group,
+                option_previews=tuple(previews),
+            )
+        )
+        value = str(self.values.setdefault(name, default))
+        return value if value in choices else default
+
+    def limits(
+        self,
+        name: str,
+        *,
+        default: tuple[float, float],
+        minimum: float,
+        maximum: float,
+        step: float = 1.0,
+        label: str | None = None,
+        group: str = "Plot styles",
+    ) -> tuple[float, float]:
+        """Add paired numeric limits with editable boxes and a dual-handle bar."""
+        lower_default, upper_default = (float(default[0]), float(default[1]))
+        minimum, maximum, step = float(minimum), float(maximum), float(step)
+        if minimum >= maximum:
+            raise ValueError("Limits minimum must be less than maximum")
+        if step <= 0:
+            raise ValueError("Limits step must be positive")
+        if not minimum <= lower_default < upper_default <= maximum:
+            raise ValueError("Default limits must be ordered and within the available range")
+        self._add_control(
+            ControlSpec(
+                name=name,
+                control_type="limits",
+                label=label,
+                default=(lower_default, upper_default),
+                minimum=minimum,
+                maximum=maximum,
+                step=step,
+                group=group,
+            )
+        )
+        raw = self.values.setdefault(name, (lower_default, upper_default))
+        try:
+            parts = raw.split(",", 1) if isinstance(raw, str) else raw
+            lower, upper = float(parts[0]), float(parts[1])
+        except (IndexError, TypeError, ValueError):
+            return lower_default, upper_default
+        lower = min(maximum, max(minimum, lower))
+        upper = min(maximum, max(minimum, upper))
+        return (lower, upper) if lower < upper else (lower_default, upper_default)
+
     def trace_style(
         self,
         name: str,
@@ -334,6 +415,7 @@ class AnalysisContext:
                 group=control.group,
                 picker=control.picker,
                 picker_label=control.picker_label,
+                option_previews=control.option_previews,
             )
             self._active_parameter_nodes.append(control_slot(control.name))
         self.controls.append(control)

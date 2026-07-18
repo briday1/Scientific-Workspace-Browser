@@ -186,6 +186,8 @@ The commonly used `AnalysisContext` methods are:
 | `ui.table(value, key=...)` | Display tabular data. |
 | `ui.text(value, key=...)` | Display text or Markdown diagnostics. |
 | `ui.number(...)`, `ui.select(...)`, `ui.color(...)` | Declare stored user parameters. |
+| `ui.colormap(...)` | Add a compact Plotly colormap picker with low-to-high gradient previews. |
+| `ui.limits(...)` | Add paired numeric boxes with a shared dual-handle limits bar. |
 | `ui.parameter_group(...)` | Place parameters directly inside the current view. |
 | `ui.view_switcher(...)` | Switch local views with buttons or a dropdown without creating another tab. |
 | `ui.trace_style(...)` | Add a compact color, width, line-style, and marker picker. |

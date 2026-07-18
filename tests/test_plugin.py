@@ -200,6 +200,48 @@ class PluginAuthoringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "#RRGGBB"):
             AnalysisContext({}).trace_style("invalid", color="teal")
 
+    def test_colormap_picker_returns_choice_and_serializes_gradient_previews(self):
+        ui = AnalysisContext({"waterfall_colormap": "Cividis"})
+        selected = ui.colormap(
+            "waterfall_colormap",
+            label="Waterfall",
+            default="Plasma",
+            options=("Plasma", "Viridis", "Cividis"),
+        )
+
+        self.assertEqual("Cividis", selected)
+        control = ui.controls[0]
+        self.assertEqual("colormap", control.control_type)
+        self.assertEqual(("Plasma", "Viridis", "Cividis"), control.options)
+        self.assertEqual("#0d0887 0%", control.option_previews[0][0])
+        self.assertEqual("#f0f921 100%", control.option_previews[0][-1])
+        self.assertEqual("Plot styles", control.group)
+
+        with self.assertRaisesRegex(ValueError, "default colormap"):
+            AnalysisContext({}).colormap("invalid", default="Plasma", options=("Viridis",))
+
+    def test_limits_picker_returns_bounded_ordered_pair(self):
+        ui = AnalysisContext({"dbfs_limits": "-82,-14"})
+        selected = ui.limits(
+            "dbfs_limits",
+            label="dBFS scale",
+            default=(-90, -20),
+            minimum=-120,
+            maximum=0,
+            step=1,
+        )
+
+        self.assertEqual((-82.0, -14.0), selected)
+        control = ui.controls[0]
+        self.assertEqual("limits", control.control_type)
+        self.assertEqual((-90.0, -20.0), control.default)
+        self.assertEqual((-120.0, 0.0, 1.0), (control.minimum, control.maximum, control.step))
+
+        fallback = AnalysisContext({"limits": "5,-5"}).limits(
+            "limits", default=(-10, 10), minimum=-20, maximum=20
+        )
+        self.assertEqual((-10.0, 10.0), fallback)
+
     def test_inline_parameter_group_places_typed_controls_in_layout(self):
         def analyze(data, ui: AnalysisContext):
             with ui.tab("Parameterized"):
