@@ -5,8 +5,9 @@ workspace package decides:
 
 1. Which items are available.
 2. How an item is opened.
-3. What data is delivered for one analysis run.
-4. How that data is processed and displayed.
+3. Which parameters configure processing, if any.
+4. How delivered data becomes analysis products.
+5. How those products are arranged and displayed.
 
 The framework supplies the catalog, page layout, parameters, themes, refresh
 and playback controls, plot updates, background capability execution, and HTTP
@@ -28,13 +29,15 @@ flowchart LR
         Factory["create_workspace(config)"]
         Source["DataSource<br/>discover and open"]
         Delivery["DataDelivery<br/>select or transform"]
-        Analyze["analyze(data, ui)<br/>process and declare views"]
+        Configure["configure(data, ui)<br/>declare processing parameters"]
+        Process["process(data, settings)<br/>produce domain results"]
+        Present["present(products, ui)<br/>declare views and layout"]
         Capabilities["DataAnnotator / DataExporter"]
     end
 
     subgraph Framework["Sigvue framework"]
         Runtime["AnalysisWorkspace runtime"]
-        Context["AnalysisContext<br/>controls, timeline, layout"]
+        Contexts["DeliveryContext / ParameterContext / ViewContext"]
         Browser["Catalog and browser UI"]
     end
 
@@ -42,15 +45,18 @@ flowchart LR
     Factory -->|returns| Runtime
     Source -->|required| Runtime
     Delivery -.->|optional| Runtime
-    Analyze -->|required| Runtime
+    Configure -.->|optional| Runtime
+    Process -->|required| Runtime
+    Present -->|required| Runtime
     Capabilities -.->|optional| Runtime
-    Runtime -->|creates and supplies| Context
+    Runtime -->|creates and supplies| Contexts
     Runtime -->|produces pages for| Browser
 ```
 
 The same factory may appear multiple times in `browser.toml`. Each entry creates
 a separate workspace instance with its own identity, tags, and data
-configuration while reusing the same source, delivery, and analysis code.
+configuration while reusing the same source, delivery, processing, and
+presentation code.
 
 ## Install and run
 
@@ -63,8 +69,10 @@ Open `http://127.0.0.1:8000`. The package contains no built-in workspaces; `brow
 
 ## The workspace-author contract
 
-Most workspace packages define one factory, one source, and one analysis
-function. Delivery, annotation, and export are independent optional contracts.
+Every workspace package defines one factory, one source, a processing function,
+and a presentation function. Configuration is optional: omit it when processing
+has no user-adjustable settings. Delivery, annotation, and export are
+independent optional contracts.
 Import public plugin types from `sigvue.plugin`; `sigvue.core` is framework
 implementation detail.
 
@@ -77,15 +85,17 @@ values passed to its constructor:
 | --- | --- | --- | --- |
 | `identifier`, `name`, `description` | Yes | Plugin defaults; profile may override | Standalone identity and fallback catalog metadata. |
 | `source: DataSource[SourceData]` | Yes | Plugin | Discover `DataResource` records and open one domain value. |
-| `analyze(data, ui)` | Yes | Plugin | Process delivered data and declare controls, views, statistics, and layout. |
+| `configure(data, ui)` | No | Plugin | Declare processing parameters and return one settings value. Omit it to pass `None` to `process`. |
+| `process(data, settings)` | Yes | Plugin | Perform domain computation and return arbitrary analysis products. |
+| `present(products, ui)` | Yes | Plugin | Declare display controls, views, statistics, and layout from the products. |
 | `delivery: DataDelivery[SourceData, DeliveredData]` | No | Plugin | Select a buffer, choose a segment, follow live data, or transform the opened value. |
 | `annotator: DataAnnotator[...]` | No | Plugin | Discover and persist domain-native annotations. Enables **Annotate**. |
 | `exporter: DataExporter[...]` | No | Plugin | Advertise formats/scopes and serialize domain data. Enables **Download**. |
 | `discovery_columns` | No | Plugin | Define sortable metadata columns populated by `DataResource.summary`. |
 | `version`, `category`, `tags` | No | Plugin defaults; profile may override display metadata | Catalog presentation and search. |
 
-The factory does **not** construct `AnalysisContext`, `PageDefinition`,
-`PlaybackConfiguration`, or `OpenedItem`. The framework creates those objects
+The factory does **not** construct `DeliveryContext`, `ParameterContext`,
+`ViewContext`, `PageDefinition`, `PlaybackConfiguration`, or `OpenedItem`. The framework creates those objects
 for each request. A source or its `DirectorySource.describe` callback creates
 `DataResource` values during discovery, not normally in the factory itself.
 
@@ -102,7 +112,9 @@ Public object ownership is intentionally narrow:
 | `DataAnnotator` / `DataExporter` | Plugin factory | Passed as optional capability objects. |
 | `AnnotationField`, `CapabilityChoice` | Plugin capability | Advertise framework-rendered capability inputs. |
 | `AnnotationRequest`, `ExportRequest` | Framework | Passed into plugin capability methods. |
-| `AnalysisContext` | Framework | Passed into delivery and analysis for the current request. |
+| `DeliveryContext` | Framework | Passed into delivery for timeline and buffer selection. |
+| `ParameterContext` | Framework | Passed into `configure`; exposes only typed parameter declarations. |
+| `ViewContext` | Framework | Passed into `present`; exposes layout, display controls, views, and statistics. |
 | `Segment` | Plugin delivery or analysis | Passed into `ui.segmented(...)`. |
 | `TraceStyle` | Framework | Returned by `ui.trace_style(...)` for plotting code. |
 
@@ -116,7 +128,9 @@ def create_workspace(config):
         name="My Analysis",                       # required fallback metadata
         description="Inspect domain recordings.", # required fallback metadata
         source=MySource(config["data_root"]),      # required DataSource
-        analyze=analyze,                           # required callable
+        configure=configure,                       # optional callable
+        process=process,                           # required callable
+        present=present,                           # required callable
         delivery=MyDelivery(),                     # optional DataDelivery
         annotator=MyAnnotator(),                   # optional capability
         exporter=MyExporter(),                     # optional capability
@@ -155,15 +169,35 @@ classDiagram
         <<optional protocol>>
         +prepare(source_data, ui) DeliveredData
     }
-    class AnalyzeFunction {
-        <<required callable>>
-        +analyze(delivered_data, ui) None
+    class ConfigureFunction {
+        <<optional callable>>
+        +configure(delivered_data, ui) Settings
     }
-    class AnalysisContext {
+    class ProcessFunction {
+        <<required callable>>
+        +process(delivered_data, settings) Products
+    }
+    class PresentFunction {
+        <<required callable>>
+        +present(products, ui) None
+    }
+    class ParameterContext {
         <<framework-created>>
-        +controls
-        +timeline
+        +number()
+        +select()
+        +toggle()
+    }
+    class DeliveryContext {
+        <<framework-created delivery context>>
+        +playback()
+        +windowed()
+        +segmented()
+    }
+    class ViewContext {
+        <<framework-created>>
         +tabs and views
+        +display controls
+        +statistics
     }
     class DataAnnotator {
         <<optional protocol>>
@@ -176,11 +210,14 @@ classDiagram
     DirectorySource ..|> DataSource : implements
     DataSource --> DataResource : discovers
     AnalysisWorkspace o-- DataDelivery : delivery
-    AnalysisWorkspace --> AnalyzeFunction : analyze
+    AnalysisWorkspace o-- ConfigureFunction : configure
+    AnalysisWorkspace --> ProcessFunction : process
+    AnalysisWorkspace --> PresentFunction : present
     AnalysisWorkspace o-- DataAnnotator : annotator
     AnalysisWorkspace o-- DataExporter : exporter
-    DataDelivery ..> AnalysisContext : receives
-    AnalyzeFunction ..> AnalysisContext : receives
+    DataDelivery ..> DeliveryContext : receives
+    ConfigureFunction ..> ParameterContext : receives
+    PresentFunction ..> ViewContext : receives
 ```
 
 ### Typed data path
@@ -195,19 +232,27 @@ flowchart LR
     Opened["SourceData<br/>domain reader or loaded object"]
     Delivery["DataDelivery&lt;SourceData, DeliveredData&gt;<br/>optional"]
     Delivered["DeliveredData<br/>buffer, segment, result, or transformed value"]
-    Analyze["analyze(DeliveredData, AnalysisContext)"]
+    Input["ProcessingInput<br/>SourceData or DeliveredData"]
+    Configure["configure(ProcessingInput, ParameterContext)<br/>returns Settings"]
+    Process["process(ProcessingInput, Settings)<br/>returns Products"]
+    Present["present(Products, ViewContext)"]
 
     Resource -->|open| Source
     Source --> Opened
-    Opened -->|no delivery: pass through| Analyze
+    Opened -->|no delivery: pass through| Input
     Opened -.->|delivery configured| Delivery
     Delivery -.-> Delivered
-    Delivered -.-> Analyze
+    Delivered --> Input
+    Input -.->|configure supplied| Configure
+    Input -->|configure omitted; Settings = None| Process
+    Configure --> Process
+    Process --> Present
 ```
 
 `AnalysisWorkspace` has typed constructor overloads connecting these stages. A
-type checker therefore catches a delivery that expects the wrong reader type or
-an analysis function that expects something other than the delivery output.
+type checker therefore catches a delivery that expects the wrong reader type,
+a configuration or processing function that expects the wrong delivered type,
+or presentation code that expects the wrong product type.
 The installed package includes a `py.typed` marker, so these checks also work
 when `sigvue` is installed from a wheel.
 
@@ -217,7 +262,7 @@ makes the contract visible and lets type checkers verify the whole path:
 ```python
 from collections.abc import Iterable
 
-from sigvue.plugin import AnalysisContext, DataDelivery, DataResource, DataSource
+from sigvue.plugin import DataDelivery, DataResource, DataSource, DeliveryContext
 
 
 class MySource(DataSource[Recording]):
@@ -232,7 +277,7 @@ class WindowDelivery(DataDelivery[Recording, SampleWindow]):
     def prepare(
         self,
         recording: Recording,
-        ui: AnalysisContext,
+        ui: DeliveryContext,
     ) -> SampleWindow:
         ...
 ```
@@ -240,15 +285,17 @@ class WindowDelivery(DataDelivery[Recording, SampleWindow]):
 Explicitly inherited methods are abstract, so an incomplete subclass cannot be
 instantiated. Inheritance is not required: structurally compatible objects also
 satisfy the interfaces. At runtime, `AnalysisWorkspace` validates that sources
-provide `discover()` and `open()`, deliveries provide `prepare()`, analysis is
-callable, discovery returns `DataResource` objects, and resource identifiers
+provide `discover()` and `open()`, deliveries provide `prepare()`, `process`
+and `present` are callable, optional `configure` is callable when supplied,
+discovery returns `DataResource` objects, and resource identifiers
 are unique. Failures identify the missing method or invalid discovery value
 directly.
 
 ### Request lifecycle
 
 The factory runs when the profile is loaded or reloaded. Source I/O, delivery,
-and analysis run later, when the browser discovers or opens data.
+configuration, processing, and presentation run later, when the browser opens
+data or changes request state.
 
 ```mermaid
 sequenceDiagram
@@ -257,9 +304,11 @@ sequenceDiagram
     participant Runtime as Sigvue runtime
     participant Factory as create_workspace
     participant Source as DataSource
-    participant Context as AnalysisContext
+    participant DeliveryContext
     participant Delivery as DataDelivery
-    participant Analyze as analyze
+    participant Configure as configure
+    participant Process as process
+    participant Present as present
 
     Runtime->>Factory: create_workspace(config)
     Factory-->>Runtime: AnalysisWorkspace
@@ -274,24 +323,34 @@ sequenceDiagram
     Browser->>Runtime: item id + controls + timeline state
     Runtime->>Source: open(resource)
     Source-->>Runtime: SourceData
-    Runtime->>Context: create request-scoped context
+    Runtime->>DeliveryContext: create request-scoped context
 
     opt delivery configured
-        Runtime->>Delivery: prepare(SourceData, Context)
-        Delivery->>Context: declare/select timeline state
+        Runtime->>Delivery: prepare(SourceData, DeliveryContext)
+        Delivery->>DeliveryContext: declare/select timeline state
         Delivery-->>Runtime: DeliveredData
     end
 
-    Runtime->>Analyze: analyze(DeliveredData or SourceData, Context)
-    Analyze->>Context: declare controls, tabs, views, and stats
-    Context-->>Runtime: validated page definition
+    opt configure supplied
+        Runtime->>Configure: configure(DeliveredData or SourceData, ParameterContext)
+        Configure-->>Runtime: Settings
+    end
+    Note over Runtime: Without configure, Settings is None
+    Runtime->>Process: process(DeliveredData or SourceData, Settings)
+    Process-->>Runtime: Products
+    Runtime->>Present: present(Products, ViewContext)
+    Present-->>Runtime: controls, tabs, views, and stats
+    Runtime->>Runtime: validate page definition
     Runtime-->>Browser: rendered page and update policy
 ```
 
 `source.open()` is called for the selected item on each page request. A domain
 reader may therefore be lightweight and read only the requested interval when
-delivery calls it. `ui.once(...)` is available for item-level work that should
-survive dynamic requests.
+delivery calls it. Processing results are cached by item revision, timeline
+state, and configuration values. Presentation-only controls and theme changes
+reuse those products; changing processing parameters or the delivered interval
+runs `process` again. Live and explicitly refreshing pages do not retain a
+process result across requests.
 
 ### Minimal file-backed workspace
 
@@ -300,11 +359,12 @@ survive dynamic requests.
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from dataclasses import dataclass
 from typing import TypedDict
 
 import plotly.graph_objects as go
 
-from sigvue.plugin import AnalysisContext, AnalysisWorkspace, DirectorySource
+from sigvue.plugin import AnalysisWorkspace, DirectorySource, ParameterContext, ViewContext
 
 
 class ResultFile(TypedDict):
@@ -315,12 +375,23 @@ def load_result(path: Path) -> ResultFile:
     return json.loads(path.read_text())
 
 
-def analyze(result: ResultFile, ui: AnalysisContext) -> None:
-    scale = ui.number("scale", label="Scale", default=1.0, step=0.1)
-    values = [scale * value for value in result["values"]]
+@dataclass(frozen=True)
+class Settings:
+    scale: float
 
+
+def configure(result: ResultFile, ui: ParameterContext) -> Settings:
+    return Settings(scale=float(ui.number("scale", label="Scale", default=1.0, step=0.1)))
+
+
+def process(result: ResultFile, settings: Settings) -> list[float]:
+    return [settings.scale * value for value in result["values"]]
+
+
+def present(values: list[float], ui: ViewContext) -> None:
     figure = go.Figure(go.Scatter(y=values, name="Value"))
     with ui.tab("Values"):
+        ui.place_parameters("scale", label="Processing")
         ui.plot(figure, key="values")
 
 
@@ -337,13 +408,20 @@ def create_workspace(config: Mapping[str, object]) -> AnalysisWorkspace:
         description="Inspect result files.",
         # Required contracts.
         source=source,
-        analyze=analyze,
+        configure=configure,
+        process=process,
+        present=present,
     )
 ```
 
-That is the complete minimal contract: one `DirectorySource` and one analysis
-callable assembled into `AnalysisWorkspace`. Add delivery or capabilities only
-when the workflow needs them.
+This example uses all three lifecycle stages because it has a processing
+parameter. The required contract is only one source, `process`, and `present`.
+When `configure` is omitted, Sigvue calls `process(data, None)`. When present,
+`configure` owns processing inputs, `process` remains ordinary domain code with
+no UI dependency, and `present` owns layout. `ui.place_parameters(...)` can put
+a configured control inside a particular tab or switched view; otherwise it
+remains in Details. Add delivery or capabilities only when the workflow needs
+them.
 
 Set `recursive=True` on `DirectorySource` to preserve nested directories in the
 browser. The framework derives folder breadcrumbs from each file's path relative
@@ -482,12 +560,14 @@ watching. A direct `module:factory` string is also accepted in `use`.
 
 ## Data delivery
 
-Without a delivery object, `analyze` receives exactly what the source opened. A delivery object can prepare a different value while leaving analysis unchanged:
+Without a delivery object, `process`—and `configure`, when supplied—receives
+exactly what the source opened. A delivery object can prepare a different value
+while leaving processing and presentation unchanged:
 
 ```python
 from dataclasses import dataclass
 
-from sigvue.plugin import AnalysisContext, DataDelivery
+from sigvue.plugin import DataDelivery, DeliveryContext, ParameterContext, ViewContext
 
 
 @dataclass(frozen=True)
@@ -500,7 +580,7 @@ class FrameDelivery(DataDelivery[Recording, SampleWindow]):
     def prepare(
         self,
         recording: Recording,
-        ui: AnalysisContext,
+        ui: DeliveryContext,
     ) -> SampleWindow:
         frame_seconds = ui.number("frame_seconds", default=0.1, minimum=0.001)
         position = ui.playback(
@@ -511,11 +591,22 @@ class FrameDelivery(DataDelivery[Recording, SampleWindow]):
         return SampleWindow(position, recording.read(position, frame_seconds))
 
 
-def analyze(window: SampleWindow, ui: AnalysisContext) -> None:
+def configure(window: SampleWindow, ui: ParameterContext) -> Settings:
+    ...
+
+
+def process(window: SampleWindow, settings: Settings) -> Products:
+    ...
+
+
+def present(products: Products, ui: ViewContext) -> None:
     ...
 ```
 
-Pass it to `AnalysisWorkspace(delivery=FrameDelivery(), ...)`. The framework calls `source.open`, then `delivery.prepare`, then `analyze` for every requested state.
+Pass it to `AnalysisWorkspace(delivery=FrameDelivery(), ...)`. The framework
+calls `source.open`, `delivery.prepare`, optional `configure`, `process`, and
+`present` for the requested state, reusing cached products when only
+presentation state changes.
 
 Available lifecycle modes are:
 
@@ -567,6 +658,24 @@ return recording.read(start, end)
 
 `overview` is optional. When supplied, it may be any finite 1D summary and does not need one value per sample. The framework distributes its values uniformly over the recording duration, so block statistics, sliding-window results, and decimated summaries all work. The framework draws and operates the range selector; tabs and exports receive only the value returned by the delivery policy.
 
+When a view switcher selects among channels or collection members, delivery can
+give the selector one overview per choice. The switcher key ties the two pieces
+together; changing views redraws only the overview and does not move or
+reprocess the selected window:
+
+```python
+start, end = ui.windowed(
+    duration=recording.duration,
+    default_window=0.1,
+    overview_series=tuple(channel.power_summary() for channel in recording.channels),
+    overview_switcher="recording-channel",
+    overview_label="Received power (dBFS)",
+)
+
+# Use the same key later in presentation.
+ui.view_switcher("Channel", channel_figures, key="recording-channel", selector="dropdown")
+```
+
 For irregular stored results, provide explicit segment descriptors and use the returned descriptor to load the matching result:
 
 ```python
@@ -586,9 +695,12 @@ Regular segments with gaps or overlaps can instead use `ui.segmented(duration=..
 
 For non-playback refresh, call `ui.refresh(every=1.0)`. The framework prevents overlapping refresh requests and updates mounted views.
 
-## Analysis UI
+## Configuration and presentation UI
 
-The commonly used `AnalysisContext` methods are:
+`ParameterContext`, received by `configure`, intentionally exposes only
+`number`, `select`, and `toggle`. That keeps processing inputs separate from
+figure construction and layout. `ViewContext`, received by `present`, provides
+the display and layout surface:
 
 | Method | Purpose |
 | --- | --- |
@@ -596,19 +708,22 @@ The commonly used `AnalysisContext` methods are:
 | `ui.plot(figure, key=...)` | Display a native Plotly or Matplotlib figure. |
 | `ui.table(value, key=...)` | Display tabular data. |
 | `ui.text(value, key=...)` | Display text or Markdown diagnostics. |
-| `ui.number(...)`, `ui.select(...)`, `ui.color(...)` | Declare stored user parameters. |
+| `ui.number(...)`, `ui.select(...)`, `ui.toggle(...)` | Declare display-only parameters during presentation. |
 | `ui.colormap(...)` | Add a compact Plotly colormap picker with low-to-high gradient previews. |
 | `ui.limits(...)` | Add validated paired numeric bounds. |
 | `ui.parameter_group(...)` | Place parameters directly inside the current view. |
+| `ui.place_parameters(...)` | Place parameters previously declared by `configure` inside the current view. |
 | `ui.view_switcher(...)` | Switch local views with buttons or a dropdown without creating another tab. |
 | `ui.trace_style(...)` | Add a compact color, width, opacity, line-style, and marker picker. |
 | `ui.stat(label, value)` | Add workflow-specific runtime or result details. |
-| `ui.once(key, factory, depends_on=...)` | Cache item-level work across dynamic updates. |
 | `ui.segmented(...)` | Select one regular or irregular timeline segment. |
 
 Plotly figures remain interactive. Matplotlib figures are rendered as responsive PNG images. Tabs can mix plots, tables, and text.
 
-Use `update="static"` for item context that should be computed once and `update="dynamic"` for data that follows delivery. A static plot factory can name parameter dependencies:
+Use `update="static"` for item context that should be rendered once and
+`update="dynamic"` for views that follow delivery. Expensive domain work
+belongs in `process`, not a plot factory. A static plot factory can still name
+presentation dependencies:
 
 ```python
 with ui.tab("Reference", update="static"):

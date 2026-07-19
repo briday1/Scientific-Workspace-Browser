@@ -4,8 +4,8 @@ from tempfile import TemporaryDirectory
 
 import plotly.graph_objects as go
 
+from sigvue.core.plugin import AnalysisContext
 from sigvue.plugin import (
-    AnalysisContext,
     AnalysisWorkspace,
     DataDelivery,
     DataResource,
@@ -24,7 +24,118 @@ class ExampleSource:
         return resource.source
 
 
+def no_parameters(data, ui):
+    return None
+
+
+def identity_process(data, settings):
+    return data
+
+
 class PluginAuthoringTests(unittest.TestCase):
+    def test_workspace_uses_only_the_split_lifecycle_contract(self):
+        with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'analyze'"):
+            AnalysisWorkspace(
+                identifier="legacy",
+                name="Legacy",
+                description="Old contract",
+                source=ExampleSource(),
+                analyze=lambda data, ui: None,
+            )
+
+    def test_configure_process_and_present_exchange_typed_values(self):
+        calls = {"configure": 0, "process": 0, "present": 0}
+
+        def configure(data, ui):
+            calls["configure"] += 1
+            self.assertEqual([1, 2, 3, 4], data)
+            return {"gain": float(ui.number("gain", default=2.0))}
+
+        def process(data, settings):
+            calls["process"] += 1
+            return tuple(value * settings["gain"] for value in data)
+
+        def present(products, ui):
+            calls["present"] += 1
+            color = str(ui.select("color", default="blue", options=("blue", "red")))
+            with ui.tab("Signal"):
+                ui.plot(go.Figure(go.Scatter(y=products, line={"color": color})), key="signal")
+
+        workspace = AnalysisWorkspace(
+            identifier="split",
+            name="Split",
+            description="Split lifecycle",
+            source=ExampleSource(),
+            configure=configure,
+            process=process,
+            present=present,
+        )
+        opened = workspace.open_item("recording")
+        recolored = opened.page.views[0].callback({"color": "red"})
+        recomputed = opened.page.views[0].callback({"gain": "3", "color": "red"})
+
+        self.assertEqual((2.0, 4.0, 6.0, 8.0), opened.page.views[0].callback({}).data[0].y)
+        self.assertEqual("red", recolored.data[0].line.color)
+        self.assertEqual((3.0, 6.0, 9.0, 12.0), recomputed.data[0].y)
+        self.assertEqual(2, calls["process"])
+        self.assertGreaterEqual(calls["configure"], 3)
+        self.assertGreaterEqual(calls["present"], 3)
+
+    def test_timeline_selection_is_part_of_the_process_cache_key(self):
+        calls = {"process": 0}
+
+        class PlaybackDelivery:
+            def prepare(self, source_data, ui):
+                start = round(ui.playback(duration=3.0, step=1.0))
+                return source_data[start : start + 1]
+
+        def process(data, settings):
+            calls["process"] += 1
+            self.assertIsNone(settings)
+            return tuple(data)
+
+        def present(products, ui):
+            with ui.tab("Signal"):
+                ui.plot(go.Figure(go.Scatter(y=products)), key="signal")
+
+        workspace = AnalysisWorkspace(
+            identifier="timeline-cache",
+            name="Timeline cache",
+            description="Timeline cache",
+            source=ExampleSource(),
+            delivery=PlaybackDelivery(),
+            process=process,
+            present=present,
+        )
+        opened = workspace.open_item("recording")
+        later = opened.page.views[0].callback({"__playback_time_seconds": "1"})
+        self.assertEqual((2,), later.data[0].y)
+        self.assertEqual(2, calls["process"])
+        self.assertEqual("not configured", opened.page.statistics["Configuration runtime"])
+
+    def test_configured_parameters_can_be_placed_in_a_view(self):
+        def configure(data, ui):
+            return ui.number("threshold", label="Threshold", default=1.0)
+
+        def present(products, ui):
+            with ui.tab("Signal"):
+                ui.place_parameters("threshold", label="Processing", columns=2)
+                ui.plot(go.Figure(go.Scatter(y=[products])), key="signal")
+
+        workspace = AnalysisWorkspace(
+            identifier="placed",
+            name="Placed",
+            description="Placed parameters",
+            source=ExampleSource(),
+            configure=configure,
+            process=lambda data, threshold: threshold,
+            present=present,
+        )
+        page = workspace.open_item("recording").page
+        self.assertEqual("inline", page.controls[0].placement)
+        self.assertEqual("control_group", page.layout.children[0].kind)
+        self.assertEqual("threshold", page.layout.children[0].children[0].props["name"])
+
     def test_discovery_columns_are_typed_and_unique(self):
         column = DiscoveryColumn("sample_rate", "Sampling rate", "si", unit="sample/s")
         self.assertEqual("sample_rate", column.key)
@@ -36,7 +147,9 @@ class PluginAuthoringTests(unittest.TestCase):
                 name="Duplicate columns",
                 description="test",
                 source=ExampleSource(),
-                analyze=lambda data, ui: None,
+                configure=no_parameters,
+                process=identity_process,
+                present=lambda data, ui: None,
                 discovery_columns=(column, column),
             )
 
@@ -65,7 +178,9 @@ class PluginAuthoringTests(unittest.TestCase):
                 name="Invalid source",
                 description="Missing open",
                 source=MissingOpen(),
-                analyze=lambda data, ui: None,
+                configure=no_parameters,
+                process=identity_process,
+                present=lambda data, ui: None,
             )
 
         with self.assertRaisesRegex(TypeError, r"delivery must implement .*missing prepare\(\)"):
@@ -75,16 +190,20 @@ class PluginAuthoringTests(unittest.TestCase):
                 description="Missing prepare",
                 source=ExampleSource(),
                 delivery=object(),
-                analyze=lambda data, ui: None,
+                configure=no_parameters,
+                process=identity_process,
+                present=lambda data, ui: None,
             )
 
-        with self.assertRaisesRegex(TypeError, r"analyze must be callable"):
+        with self.assertRaisesRegex(TypeError, r"configure must be callable.*or omitted"):
             AnalysisWorkspace(
                 identifier="invalid-analysis",
                 name="Invalid analysis",
                 description="Non-callable analysis",
                 source=ExampleSource(),
-                analyze=None,
+                configure=object(),
+                process=identity_process,
+                present=lambda data, ui: None,
             )
 
     def test_source_discovery_validates_resources_and_unique_identifiers(self):
@@ -100,7 +219,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Invalid resources",
             description="Wrong discovery value",
             source=InvalidResources(),
-            analyze=lambda data, ui: None,
+            configure=no_parameters,
+            process=identity_process,
+            present=lambda data, ui: None,
         )
         with self.assertRaisesRegex(TypeError, r"item 0 must be DataResource, got str"):
             invalid.discover_items()
@@ -117,7 +238,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Duplicate resources",
             description="Duplicate discovery identifiers",
             source=DuplicateResources(),
-            analyze=lambda data, ui: None,
+            configure=no_parameters,
+            process=identity_process,
+            present=lambda data, ui: None,
         )
         with self.assertRaisesRegex(ValueError, r"duplicate identifiers: same"):
             duplicate.discover_items()
@@ -138,7 +261,9 @@ class PluginAuthoringTests(unittest.TestCase):
                 name="Files",
                 description="Directory files",
                 source=DirectorySource(root, pattern="*.dat", loader=lambda path: [int(value) for value in path.read_text().split(",")]),
-                analyze=analyze,
+                configure=no_parameters,
+                process=identity_process,
+                present=analyze,
             )
             self.assertEqual(["first.dat", "second.dat"], [item.identifier for item in workspace.discover_items()])
             figure = workspace.open_item("second.dat").page.views[0].callback({})
@@ -158,7 +283,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Example",
             description="Example analysis",
             source=ExampleSource(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         self.assertEqual(["recording"], [item.identifier for item in workspace.discover_items()])
         opened = workspace.open_item("recording")
@@ -188,7 +315,9 @@ class PluginAuthoringTests(unittest.TestCase):
             description="Delivery policy",
             source=ExampleSource(),
             delivery=WindowDelivery(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         page = workspace.open_item_with_values("recording", {"buffer_size": "3", "__playback_time_seconds": "1"}).page
         self.assertEqual((2, 3, 4), page.views[0].callback({"buffer_size": "3", "__playback_time_seconds": "1"}).data[0].y)
@@ -218,7 +347,9 @@ class PluginAuthoringTests(unittest.TestCase):
             description="Window selection",
             source=ExampleSource(),
             delivery=WindowedDelivery(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         values = {"__window_start_seconds": "1", "__window_end_seconds": "3"}
         page = workspace.open_item_with_values("recording", values).page
@@ -241,6 +372,27 @@ class PluginAuthoringTests(unittest.TestCase):
 
         ui.windowed(duration=60.0, default_window=2.0, overview=(0.25,))
         self.assertEqual((0.25,), ui.playback_config.overview_values)
+
+    def test_windowed_overview_can_follow_a_view_switcher(self):
+        ui = AnalysisContext({})
+        ui.windowed(
+            duration=60.0,
+            default_window=2.0,
+            overview_series=((0.1, 0.2), (0.8, 0.9)),
+            overview_switcher="channel",
+        )
+        self.assertEqual((0.1, 0.2), ui.playback_config.overview_values)
+        self.assertEqual(((0.1, 0.2), (0.8, 0.9)), ui.playback_config.overview_series)
+        self.assertEqual("channel", ui.playback_config.overview_switcher_key)
+
+    def test_windowed_overview_series_requires_a_view_switcher(self):
+        ui = AnalysisContext({})
+        with self.assertRaisesRegex(ValueError, "switcher"):
+            ui.windowed(
+                duration=60.0,
+                default_window=2.0,
+                overview_series=((0.1, 0.2), (0.8, 0.9)),
+            )
 
     def test_pipeline_can_choose_timeline_display_units_without_changing_seconds(self):
         playback = AnalysisContext({"__playback_time_seconds": "7200"})
@@ -300,7 +452,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Live",
             description="Live analysis",
             source=ExampleSource(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         self.assertEqual(1.0, workspace.open_item("recording").page.refresh.interval_seconds)
 
@@ -399,7 +553,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Inline parameters",
             description="Layout controls",
             source=ExampleSource(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         page = workspace.open_item_with_values("recording", {"threshold": "4.5", "mode": "Maximum"}).page
         self.assertEqual(["inline", "inline"], [control.placement for control in page.controls])
@@ -436,7 +592,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Mixed switcher",
             description="Mixed switched layouts",
             source=ExampleSource(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         page = workspace.open_item("recording").page
         switcher = page.layout.children[0]
@@ -460,7 +618,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Switchers",
             description="Multiple local view selectors",
             source=ExampleSource(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         page = workspace.open_item("recording").page
         self.assertEqual(4, len(page.views))
@@ -485,7 +645,9 @@ class PluginAuthoringTests(unittest.TestCase):
             name="Lifecycles",
             description="Static and dynamic views",
             source=ExampleSource(),
-            analyze=analyze,
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
         )
         initial = workspace.open_item("recording").page
         later = workspace.open_item_with_values("recording", {"__playback_time_seconds": "1.5"}).page

@@ -57,6 +57,10 @@ class MemoryExporter:
         return target
 
 
+def identity_process(data, settings):
+    return data
+
+
 def analyze_plotly(data, ui):
     gain = ui.number("gain", default=1.0, step=0.1)
     ui.playback(mode="seek", duration=2.0, step=0.25)
@@ -84,7 +88,8 @@ def create_workspace(config=None):
         source=MemorySource(),
         annotator=MemoryAnnotator(),
         exporter=MemoryExporter(),
-        analyze=analyze_plotly,
+        process=identity_process,
+        present=analyze_plotly,
         discovery_columns=(
             DiscoveryColumn("date", "Date", "datetime"),
             DiscoveryColumn("sample_rate", "Sampling rate", "si", unit="sample/s"),
@@ -102,7 +107,8 @@ def create_test_app() -> SigvueApp:
             name="Matplotlib Workspace",
             description="Matplotlib export fixture",
             source=MemorySource(),
-            analyze=analyze_matplotlib,
+            process=identity_process,
+            present=analyze_matplotlib,
         )
     )
     return app

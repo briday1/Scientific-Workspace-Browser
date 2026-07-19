@@ -14,7 +14,7 @@ from sigvue.web.application import (
     _make_handler,
     _module_watch_snapshot,
 )
-from tests.fixtures import create_test_app
+from tests.fixtures import create_test_app, identity_process
 
 
 class WebAppTests(unittest.TestCase):
@@ -79,7 +79,8 @@ class WebAppTests(unittest.TestCase):
                 name="Nested files",
                 description="Nested directory fixture",
                 source=DirectorySource(root, pattern="*.dat", loader=lambda path: path.read_text(), recursive=True),
-                analyze=analyze,
+                process=identity_process,
+                present=analyze,
             )
             app = SigvueApp()
             app.register_workspace(workspace)
@@ -258,6 +259,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("__window_start_seconds:windowStart", body)
         self.assertIn("__window_end_seconds:windowEnd", body)
         self.assertIn("config.overview_values", body)
+        self.assertIn("config.overview_series", body)
+        self.assertIn("config.overview_switcher_key", body)
+        self.assertIn("redrawWindowOverview?.()", body)
+        self.assertIn("rememberPlotResetRanges", body)
+        self.assertIn("resetPlotAxes(plot)", body)
+        self.assertIn("return false", body)
+        self.assertIn("modeBarButtonsToAdd:['select2d']", body)
+        self.assertIn("modeBarButtonsToRemove:['lasso2d']", body)
         self.assertIn("const scheduleCommit=()", body)
         self.assertIn("render();scheduleCommit()", body)
         self.assertIn("track.onpointerup=event=>", body)
@@ -278,6 +287,19 @@ class WebAppTests(unittest.TestCase):
         handler.do_GET()
         javascript = handler._write_javascript.call_args.args[0]
         self.assertIn("plotly.js", javascript)
+
+    def test_item_routes_decode_url_encoded_identifiers(self):
+        app = Mock()
+        app.open_item.return_value = {"item": {"id": "2mhz::lfm-2mhz"}}
+        handler_type = _make_handler(app)
+        handler = handler_type.__new__(handler_type)
+        handler.path = "/workspaces/radar-waterfall/items/2mhz%3A%3Alfm-2mhz"
+        handler._write_json = Mock()
+
+        handler.do_GET()
+
+        app.open_item.assert_called_once_with("radar-waterfall", "2mhz::lfm-2mhz", {})
+        handler._write_json.assert_called_once_with(200, {"item": {"id": "2mhz::lfm-2mhz"}})
 
     def test_annotation_endpoint_routes_plugin_values(self):
         app = Mock()

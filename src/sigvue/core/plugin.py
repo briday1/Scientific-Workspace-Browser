@@ -7,12 +7,14 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
-from typing import Any, Callable, Generic, Iterable, Iterator, Literal, Protocol, TypeVar, overload, runtime_checkable
+from typing import Any, Callable, Generic, Iterable, Iterator, Literal, Protocol, TypeAlias, TypeVar, overload, runtime_checkable
 
 from plotly.colors import get_colorscale
 
 from .capabilities import (
+    Annotation,
     AnnotationCapability,
+    AnnotationRequest,
     DataAnnotator,
     DataExporter,
     ExportCapability,
@@ -64,6 +66,8 @@ DeliveredData_co = TypeVar("DeliveredData_co", covariant=True)
 SourceData = TypeVar("SourceData")
 DeliveredData = TypeVar("DeliveredData")
 LoadedData = TypeVar("LoadedData")
+SettingsData = TypeVar("SettingsData")
+AnalysisProducts = TypeVar("AnalysisProducts")
 
 
 def _missing_methods(value: object, names: tuple[str, ...]) -> list[str]:
@@ -83,10 +87,50 @@ class DataSource(Protocol[SourceData_co]):
 
 @runtime_checkable
 class DataDelivery(Protocol[SourceData_contra, DeliveredData_co]):
-    """Typed delivery contract between source I/O and the analysis function."""
+    """Typed delivery contract between source I/O and workspace processing."""
 
     @abstractmethod
-    def prepare(self, source_data: SourceData_contra, ui: AnalysisContext) -> DeliveredData_co: ...
+    def prepare(self, source_data: SourceData_contra, ui: DeliveryContext) -> DeliveredData_co: ...
+
+
+@runtime_checkable
+class ParameterContext(Protocol):
+    """Restricted control-declaration surface passed to split analysis configuration."""
+
+    def select(
+        self,
+        name: str,
+        *,
+        default: object,
+        options: Iterable[object],
+        label: str | None = None,
+        group: str | None = None,
+        picker: str | None = None,
+        picker_label: str | None = None,
+    ) -> object: ...
+
+    def toggle(
+        self,
+        name: str,
+        *,
+        default: bool = True,
+        label: str | None = None,
+        group: str | None = None,
+    ) -> bool: ...
+
+    def number(
+        self,
+        name: str,
+        *,
+        default: int | float,
+        minimum: int | float | None = None,
+        maximum: int | float | None = None,
+        step: int | float | None = None,
+        label: str | None = None,
+        group: str | None = None,
+        picker: str | None = None,
+        picker_label: str | None = None,
+    ) -> int | float: ...
 
 
 @dataclass(frozen=True)
@@ -178,7 +222,7 @@ class _Tab:
 
 
 class AnalysisContext:
-    """Imperative UI hooks passed to an analysis function on every update."""
+    """Framework request context exposed through lifecycle-specific public aliases."""
 
     def __init__(
         self,
@@ -546,6 +590,8 @@ class AnalysisContext:
         duration: float,
         default_window: float,
         overview: Iterable[float] | None = None,
+        overview_series: Iterable[Iterable[float]] | None = None,
+        overview_switcher: str | None = None,
         overview_label: str | None = None,
         minimum_window: float | None = None,
         step: float | None = None,
@@ -568,7 +614,16 @@ class AnalysisContext:
             start, end = 0.0, default_end
         start = min(duration - minimum, max(0.0, start))
         end = min(duration, max(start + minimum, end))
-        values = () if overview is None else tuple(float(value) for value in overview)
+        series = (
+            ()
+            if overview_series is None
+            else tuple(tuple(float(value) for value in values) for values in overview_series)
+        )
+        values = (
+            tuple(float(value) for value in overview)
+            if overview is not None
+            else (series[0] if series else ())
+        )
         self.playback_config = PlaybackConfiguration(
             mode="windowed",
             duration_seconds=duration,
@@ -578,6 +633,8 @@ class AnalysisContext:
             window_end_seconds=end,
             minimum_window_seconds=minimum,
             overview_values=values,
+            overview_series=series,
+            overview_switcher_key=overview_switcher,
             overview_label=overview_label,
             time_unit=time_unit,
         )
@@ -721,6 +778,35 @@ class AnalysisContext:
         if not children:
             raise ValueError("ui.parameter_group() must contain at least one number or select control")
         parent.append(container("control_group", children, label=label, columns=columns))
+
+    def place_parameters(self, *names: str, label: str | None = None, columns: int = 1) -> None:
+        """Place controls declared by configure() into the active view layout."""
+        if self._active_nodes is None:
+            raise RuntimeError("ui.place_parameters() must be used inside ui.tab()")
+        if not names:
+            raise ValueError("ui.place_parameters() requires at least one control name")
+        if len(names) != len(set(names)):
+            raise ValueError("ui.place_parameters() control names must be unique")
+        if columns < 1:
+            raise ValueError("columns must be positive")
+        indexes = {control.name: index for index, control in enumerate(self.controls)}
+        missing = [name for name in names if name not in indexes]
+        if missing:
+            raise ValueError(f"Unknown configured control: {', '.join(missing)}")
+        for name in names:
+            index = indexes[name]
+            control = self.controls[index]
+            if control.placement == "inline":
+                raise ValueError(f"Control already placed inline: {name}")
+            self.controls[index] = replace(control, placement="inline")
+        self._active_nodes.append(
+            container(
+                "control_group",
+                (control_slot(name) for name in names),
+                label=label,
+                columns=columns,
+            )
+        )
 
     @contextmanager
     def switcher(self, label: str, *, key: str, selector: str = "buttons") -> Iterator[None]:
@@ -894,8 +980,12 @@ class AnalysisContext:
         return tab_nodes[0] if len(tab_nodes) == 1 else container("tabs", tab_nodes)
 
 
+DeliveryContext: TypeAlias = AnalysisContext
+ViewContext: TypeAlias = AnalysisContext
+
+
 class AnalysisWorkspace:
-    """Adapts a source + analysis script to the full Workspace contract."""
+    """Run the optional configure -> process -> present workspace lifecycle."""
 
     @overload
     def __init__(
@@ -905,7 +995,9 @@ class AnalysisWorkspace:
         name: str,
         description: str,
         source: DataSource[SourceData],
-        analyze: Callable[[SourceData, AnalysisContext], None],
+        configure: Callable[[SourceData, ParameterContext], SettingsData],
+        process: Callable[[SourceData, SettingsData], AnalysisProducts],
+        present: Callable[[AnalysisProducts, ViewContext], None],
         delivery: None = None,
         annotator: DataAnnotator[SourceData, SourceData] | None = None,
         exporter: DataExporter[SourceData, SourceData] | None = None,
@@ -923,8 +1015,50 @@ class AnalysisWorkspace:
         name: str,
         description: str,
         source: DataSource[SourceData],
-        analyze: Callable[[DeliveredData, AnalysisContext], None],
+        process: Callable[[SourceData, None], AnalysisProducts],
+        present: Callable[[AnalysisProducts, ViewContext], None],
+        configure: None = None,
+        delivery: None = None,
+        annotator: DataAnnotator[SourceData, SourceData] | None = None,
+        exporter: DataExporter[SourceData, SourceData] | None = None,
+        version: str = "0.1.0",
+        category: str | None = None,
+        tags: tuple[str, ...] = (),
+        discovery_columns: tuple[DiscoveryColumn, ...] = (),
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        *,
+        identifier: str,
+        name: str,
+        description: str,
+        source: DataSource[SourceData],
+        configure: Callable[[DeliveredData, ParameterContext], SettingsData],
+        process: Callable[[DeliveredData, SettingsData], AnalysisProducts],
+        present: Callable[[AnalysisProducts, ViewContext], None],
         delivery: DataDelivery[SourceData, DeliveredData],
+        annotator: DataAnnotator[SourceData, DeliveredData] | None = None,
+        exporter: DataExporter[SourceData, DeliveredData] | None = None,
+        version: str = "0.1.0",
+        category: str | None = None,
+        tags: tuple[str, ...] = (),
+        discovery_columns: tuple[DiscoveryColumn, ...] = (),
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        *,
+        identifier: str,
+        name: str,
+        description: str,
+        source: DataSource[SourceData],
+        process: Callable[[DeliveredData, None], AnalysisProducts],
+        present: Callable[[AnalysisProducts, ViewContext], None],
+        delivery: DataDelivery[SourceData, DeliveredData],
+        configure: None = None,
         annotator: DataAnnotator[SourceData, DeliveredData] | None = None,
         exporter: DataExporter[SourceData, DeliveredData] | None = None,
         version: str = "0.1.0",
@@ -940,7 +1074,9 @@ class AnalysisWorkspace:
         name: str,
         description: str,
         source: DataSource[Any],
-        analyze: Callable[[Any, AnalysisContext], None],
+        process: Callable[[Any, Any], Any],
+        present: Callable[[Any, ViewContext], None],
+        configure: Callable[[Any, ParameterContext], Any] | None = None,
         delivery: DataDelivery[Any, Any] | None = None,
         annotator: DataAnnotator[Any, Any] | None = None,
         exporter: DataExporter[Any, Any] | None = None,
@@ -976,8 +1112,12 @@ class AnalysisWorkspace:
                 values = [choice.value for choice in choices]
                 if len(values) != len(set(values)):
                     raise ValueError(f"DataExporter {choice_kind} values must be unique")
-        if not callable(analyze):
-            raise TypeError("analyze must be callable as analyze(delivered_data, ui)")
+        if configure is not None and not callable(configure):
+            raise TypeError("configure must be callable as configure(data, ui), or omitted")
+        if not all(callable(callback) for callback in (process, present)):
+            raise TypeError(
+                "Workspace requires callable process(data, settings) and present(products, ui)"
+            )
         if any(not isinstance(column, DiscoveryColumn) for column in discovery_columns):
             raise TypeError("discovery_columns must contain DiscoveryColumn values")
         column_keys = [column.key for column in discovery_columns]
@@ -986,11 +1126,14 @@ class AnalysisWorkspace:
         self.metadata = WorkspaceMetadata(identifier, name, description, version, category, tags)
         self.discovery_columns = discovery_columns
         self.source = source
-        self.analyze = analyze
+        self.configure = configure
+        self.process = process
+        self.present = present
         self.delivery = delivery
         self.annotator = annotator
         self.exporter = exporter
         self._once_caches: dict[str, dict[tuple[object, ...], object]] = {}
+        self._process_caches: dict[str, dict[tuple[object, ...], object]] = {}
         self._cache_lock = RLock()
 
     def _resources(self) -> dict[str, DataResource]:
@@ -1037,15 +1180,76 @@ class AnalysisWorkspace:
         cache: dict[tuple[tuple[str, str], ...], AnalysisContext] = {}
         with self._cache_lock:
             once_cache = self._once_caches.setdefault(item_id, {})
+            process_cache = self._process_caches.setdefault(item_id, {})
+
+        source_revision: tuple[object, ...] = (repr(resource.source), repr(resource.timestamp))
+        try:
+            source_path = Path(resource.source)
+            source_stat = source_path.stat()
+            source_revision += (source_stat.st_mtime_ns, source_stat.st_size)
+        except (OSError, TypeError, ValueError):
+            pass
 
         def render(values: dict[str, object]) -> AnalysisContext:
             key = tuple(sorted((name, repr(value)) for name, value in values.items()))
             if key not in cache:
                 context = AnalysisContext(values, once_cache=once_cache, cache_lock=self._cache_lock)
                 started = perf_counter()
+                delivery_started = perf_counter()
                 prepared = self.delivery.prepare(data, context) if self.delivery is not None else data
                 context._delivered_data = prepared
-                self.analyze(prepared, context)
+                delivery_elapsed = perf_counter() - delivery_started
+
+                configure_started = perf_counter()
+                settings = self.configure(prepared, context) if self.configure is not None else None
+                configure_elapsed = perf_counter() - configure_started
+                compute_controls = tuple(control.name for control in context.controls)
+                lifecycle_names = (
+                    "__playback_time_seconds",
+                    "__playback_follow_live",
+                    "__window_start_seconds",
+                    "__window_end_seconds",
+                    "__segment_id",
+                )
+                process_key = (
+                    "process",
+                    source_revision,
+                    tuple((name, repr(context.values.get(name))) for name in lifecycle_names),
+                    tuple((name, repr(context.values.get(name))) for name in compute_controls),
+                    repr(settings),
+                )
+                missing = object()
+                with self._cache_lock:
+                    products = process_cache.get(process_key, missing)
+                process_started = perf_counter()
+                process_cached = products is not missing
+                if not process_cached:
+                    products = self.process(prepared, settings)
+                process_elapsed = perf_counter() - process_started
+
+                presentation_started = perf_counter()
+                self.present(products, context)
+                presentation_elapsed = perf_counter() - presentation_started
+                if (
+                    not process_cached
+                    and context.playback_config.mode != "live"
+                    and not context.refresh_config.enabled
+                ):
+                    with self._cache_lock:
+                        if len(process_cache) >= 32:
+                            process_cache.pop(next(iter(process_cache)))
+                        process_cache[process_key] = products
+
+                context.statistics.setdefault("Delivery runtime", f"{delivery_elapsed * 1_000:.1f} ms")
+                context.statistics.setdefault(
+                    "Configuration runtime",
+                    f"{configure_elapsed * 1_000:.1f} ms" if self.configure is not None else "not configured",
+                )
+                context.statistics.setdefault(
+                    "Process runtime",
+                    "cached" if process_cached else f"{process_elapsed * 1_000:.1f} ms",
+                )
+                context.statistics.setdefault("Presentation runtime", f"{presentation_elapsed * 1_000:.1f} ms")
                 context.statistics.setdefault("Analysis runtime", f"{(perf_counter() - started) * 1_000:.1f} ms")
                 cache.clear()
                 cache[key] = context
@@ -1057,6 +1261,20 @@ class AnalysisWorkspace:
             for name in initial.figures
         )
         item = next(item for item in self.discover_items() if item.identifier == item_id)
+
+        def annotate(requested_values: dict[str, object], request: AnnotationRequest) -> Annotation:
+            if self.annotator is None:
+                raise RuntimeError("Workspace does not provide annotation support")
+            result = self.annotator.annotate(
+                data,
+                render(requested_values)._delivered_data,
+                request,
+            )
+            with self._cache_lock:
+                process_cache.clear()
+                cache.clear()
+            return result
+
         page = PageDefinition(
             title=item.title,
             subtitle=item.subtitle,
@@ -1071,9 +1289,7 @@ class AnalysisWorkspace:
                 AnnotationCapability(
                     fields=tuple(self.annotator.fields),
                     discover_callback=lambda: tuple(self.annotator.discover(data)),
-                    annotate_callback=lambda requested_values, request: self.annotator.annotate(
-                        data, render(requested_values)._delivered_data, request
-                    ),
+                    annotate_callback=annotate,
                     timeline_color_control=getattr(self.annotator, "timeline_color_control", None),
                 )
                 if self.annotator is not None

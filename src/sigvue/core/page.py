@@ -44,6 +44,8 @@ class PlaybackConfiguration:
     window_end_seconds: float = 0.0
     minimum_window_seconds: float = 0.0
     overview_values: tuple[float, ...] = ()
+    overview_series: tuple[tuple[float, ...], ...] = ()
+    overview_switcher_key: str | None = None
     overview_label: str | None = None
     segments: tuple[Segment, ...] = ()
     selected_segment_id: str | None = None
@@ -65,6 +67,14 @@ class PlaybackConfiguration:
                 raise ValueError("Windowed duration must be positive")
             if not all(isfinite(value) for value in self.overview_values):
                 raise ValueError("Windowed overview values must be finite")
+            if not all(
+                isfinite(value)
+                for series in self.overview_series
+                for value in series
+            ):
+                raise ValueError("Windowed overview series must be finite")
+            if self.overview_series and not self.overview_switcher_key:
+                raise ValueError("Windowed overview series require a view switcher key")
             if not 0 <= self.window_start_seconds < self.window_end_seconds <= self.duration_seconds:
                 raise ValueError("Windowed selection must lie within the duration")
             if not 0 < self.minimum_window_seconds <= self.duration_seconds:
