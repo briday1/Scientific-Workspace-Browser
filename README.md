@@ -70,12 +70,11 @@ Open `http://127.0.0.1:8000`. The package contains no built-in workspaces; `brow
 This repository includes external-style reference implementations under
 [`example_pipelines/`](example_pipelines/README.md). They are intentionally outside
 `src/sigvue` and separate shared SigMF I/O, styling, delivery, analysis,
-Plotly presentation, and workspace assembly. Generate the small synthetic LTE-like
-uplink/downlink and digital-modulation recordings and launch them with:
+Plotly presentation, and workspace assembly. Generate all of the small synthetic
+LTE-like and digital-modulation recordings, then launch them with:
 
 ```bash
-python example_pipelines/scripts/generate_lte.py
-python example_pipelines/scripts/generate_comms.py
+python example_pipelines/scripts/generate_all.py
 sigvue --config example_pipelines/browser.toml
 ```
 

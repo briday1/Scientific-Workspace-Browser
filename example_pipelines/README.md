@@ -13,21 +13,26 @@ example_pipelines/
 │   ├── analysis.py     numerical processing
 │   ├── plots.py        controls, Plotly figure, and tab layout
 │   └── workspace.py    framework object assembly only
-├── scripts/generate_lte.py
+├── scripts/
+│   ├── generate_all.py
+│   ├── generate_comms.py
+│   └── generate_lte.py
 └── browser.toml
 ```
 
 Generate the synthetic LTE uplink/downlink and QPSK/16-QAM/64-QAM SigMF recordings, then launch Sigvue:
 
 ```bash
-python example_pipelines/scripts/generate_lte.py
-python example_pipelines/scripts/generate_comms.py
+python example_pipelines/scripts/generate_all.py
 sigvue --config example_pipelines/browser.toml
 ```
 
 Open <http://127.0.0.1:8000>. Generated data stays untracked. The LTE
 uplink and downlink pairs are written together under `example_pipelines/data/lte/`;
 the modulation recordings are written under `example_pipelines/data/comms/`.
+Pass `--output PATH` to place both dataset groups under another data root. The
+individual `generate_lte.py` and `generate_comms.py` scripts remain available
+when only one group is needed.
 
 ## The current plugin contract
 
