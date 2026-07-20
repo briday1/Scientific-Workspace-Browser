@@ -137,7 +137,9 @@ jobs:
         env:
           VERSION: ${{ steps.set-version.outputs.version }}
         run: |
-          python scripts/build_pypi_readme.py --ref "v$VERSION"
+          python scripts/build_pypi_readme.py \
+            --ref "v$VERSION" \
+            --puppeteer-config scripts/puppeteer-ci.json
           python -m build
           python -m twine check dist/*.whl dist/*.tar.gz
 
