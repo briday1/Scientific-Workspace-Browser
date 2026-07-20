@@ -1,11 +1,11 @@
-from .contracts import Workspace
+from .contracts import WorkspaceProtocol
 from .layout import LayoutNode, container, validate_layout, view_slot
 from .models import ItemDescriptor, RefreshConfiguration, RefreshResult, WorkspaceMetadata
 from .page import ControlSpec, OpenedItem, PageDefinition, Segment, ViewSpec
 from .plugin import TraceStyle
 
 __all__ = [
-    "Workspace",
+    "WorkspaceProtocol",
     "LayoutNode",
     "container",
     "validate_layout",

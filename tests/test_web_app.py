@@ -7,14 +7,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock
 
-from sigvue.plugin import AnalysisWorkspace, DirectorySource
+from sigvue.plugin import Analysis, DirectorySource, Presentation, Workspace
 from sigvue.web.application import (
     SigvueApp,
     WorkspaceModuleRegistration,
     _make_handler,
     _module_watch_snapshot,
 )
-from tests.fixtures import create_test_app, identity_process
+from tests.fixtures import IdentityAnalysis, create_test_app, identity_process
 
 
 class WebAppTests(unittest.TestCase):
@@ -74,13 +74,17 @@ class WebAppTests(unittest.TestCase):
                 with ui.tab("Data"):
                     ui.text(data, key="data")
 
-            workspace = AnalysisWorkspace(
+            class TextPresentation(Presentation):
+                def present(self, data, ui):
+                    analyze(data, ui)
+
+            workspace = Workspace(
                 identifier="nested-files",
                 name="Nested files",
                 description="Nested directory fixture",
                 source=DirectorySource(root, pattern="*.dat", loader=lambda path: path.read_text(), recursive=True),
-                process=identity_process,
-                present=analyze,
+                analysis=IdentityAnalysis(),
+                presentation=TextPresentation(),
             )
             app = SigvueApp()
             app.register_workspace(workspace)
@@ -130,6 +134,9 @@ class WebAppTests(unittest.TestCase):
         body = handler._write_html.call_args.args[0]
         self.assertIn("Sigvue", body)
         self.assertIn("Explore scientific and analytical results", body)
+        self.assertIn('id="header-back"', body)
+        self.assertIn('id="header-forward"', body)
+        self.assertIn('id="header-refresh"', body)
         self.assertIn('id="fullscreen-toggle"', body)
         self.assertIn('id="header-details"', body)
         self.assertIn('id="header-download"', body)
@@ -170,6 +177,10 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("event.currentTarget.reset()", body)
         self.assertIn("requestFullscreen()", body)
         self.assertIn("fullscreenchange", body)
+        self.assertIn("headerBack.onclick=()=>history.back()", body)
+        self.assertIn("headerForward.onclick=()=>history.forward()", body)
+        self.assertIn("headerRefresh.onclick=()=>location.reload()", body)
+        self.assertIn("if(navigate)pushRoute", body)
         self.assertIn("catalog()", body)
         self.assertIn('id="workspace-search"', body)
         self.assertIn('placeholder="Search workspaces…"', body)
@@ -249,6 +260,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="segmented-track"', body)
         self.assertIn('id="segment-previous"', body)
         self.assertIn('id="segment-next"', body)
+        self.assertIn(
+            '<div class="segment-actions"><button id="segment-previous" type="button">Previous</button>'
+            '<button id="segment-next" type="button">Next</button></div>',
+            body,
+        )
         self.assertIn("__segment_id:segmentId", body)
         self.assertIn('id="windowed-track"', body)
         self.assertIn('id="windowed-left"', body)

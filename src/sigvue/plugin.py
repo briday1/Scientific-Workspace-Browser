@@ -1,16 +1,18 @@
 """Stable public API for typed, data-driven workspace plugins."""
 
 from sigvue.core.plugin import (
-    AnalysisWorkspace,
-    DataDelivery,
+    Analysis,
+    Delivery,
     DeliveryContext,
     DiscoveryColumn,
     DataResource,
-    DataSource,
     DirectorySource,
     ParameterContext,
+    Presentation,
+    Source,
     TraceStyle,
     ViewContext,
+    Workspace,
 )
 from sigvue.core.page import AxisNavigation, PlaybackMode, Segment, TimeUnit
 from sigvue.core.capabilities import (
@@ -19,32 +21,34 @@ from sigvue.core.capabilities import (
     AnnotationPlotBinding,
     AnnotationRequest,
     CapabilityChoice,
-    DataAnnotator,
-    DataExporter,
+    Annotator,
+    Exporter,
     ExportRequest,
 )
 
 __all__ = [
-    "AnalysisWorkspace",
+    "Analysis",
     "AxisNavigation",
     "Annotation",
     "AnnotationField",
     "AnnotationPlotBinding",
     "AnnotationRequest",
     "CapabilityChoice",
-    "DataDelivery",
+    "Delivery",
     "DeliveryContext",
     "DiscoveryColumn",
-    "DataAnnotator",
-    "DataExporter",
+    "Annotator",
+    "Exporter",
     "DataResource",
-    "DataSource",
     "DirectorySource",
     "ExportRequest",
     "PlaybackMode",
     "ParameterContext",
+    "Presentation",
     "Segment",
+    "Source",
     "TraceStyle",
     "ViewContext",
+    "Workspace",
     "TimeUnit",
 ]

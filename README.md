@@ -27,16 +27,15 @@ flowchart LR
 
     subgraph Plugin["Workspace package"]
         Factory["create_workspace(config)"]
-        Source["DataSource<br/>discover and open"]
-        Delivery["DataDelivery<br/>select or transform"]
-        Configure["configure(data, ui)<br/>declare processing parameters"]
-        Process["process(data, settings)<br/>produce domain results"]
-        Present["present(products, ui)<br/>declare views and layout"]
-        Capabilities["DataAnnotator / DataExporter"]
+        Source["Source<br/>discover and open"]
+        Delivery["Delivery<br/>select or transform"]
+        Analysis["Analysis<br/>configure + process"]
+        Presentation["Presentation<br/>present views and layout"]
+        Capabilities["Annotator / Exporter"]
     end
 
     subgraph Framework["Sigvue framework"]
-        Runtime["AnalysisWorkspace runtime"]
+        Runtime["Workspace"]
         Contexts["DeliveryContext / ParameterContext / ViewContext"]
         Browser["Catalog and browser UI"]
     end
@@ -45,9 +44,8 @@ flowchart LR
     Factory -->|returns| Runtime
     Source -->|required| Runtime
     Delivery -.->|optional| Runtime
-    Configure -.->|optional| Runtime
-    Process -->|required| Runtime
-    Present -->|required| Runtime
+    Analysis -->|required| Runtime
+    Presentation -->|required| Runtime
     Capabilities -.->|optional| Runtime
     Runtime -->|creates and supplies| Contexts
     Runtime -->|produces pages for| Browser
@@ -67,32 +65,103 @@ sigvue --config browser.toml
 
 Open `http://127.0.0.1:8000`. The package contains no built-in workspaces; `browser.toml` chooses which independently installed or local workspace packages to load.
 
+### Runnable pipeline example
+
+This repository includes external-style reference implementations under
+[`example_pipelines/`](example_pipelines/README.md). They are intentionally outside
+`src/sigvue` and separate shared SigMF I/O, styling, delivery, analysis,
+Plotly presentation, and workspace assembly. Generate the small synthetic LTE-like
+uplink/downlink and digital-modulation recordings and launch them with:
+
+```bash
+python example_pipelines/scripts/generate_lte.py
+python example_pipelines/scripts/generate_comms.py
+sigvue --config example_pipelines/browser.toml
+```
+
+The generated SigMF data is ignored by Git. The example exists to show a complete,
+copyable plugin repository shape; it is not built into the Sigvue package.
+
 ## The workspace-author contract
 
-Every workspace package defines one factory, one source, a processing function,
-and a presentation function. Configuration is optional: omit it when processing
-has no user-adjustable settings. Delivery, annotation, and export are
-independent optional contracts.
+Every workspace package defines one factory and composes framework objects.
+`Source` owns discovery and opening, optional
+`Delivery` owns request-dependent selection, `Analysis` owns configuration and
+processing, and `Presentation` owns display. Annotation and export are
+independent optional capabilities.
 Import public plugin types from `sigvue.plugin`; `sigvue.core` is framework
 implementation detail.
 
+Only descriptive values such as identifiers, labels, tags, versions, and
+column definitions are plain data. Every behavioral constructor field requires
+an explicit framework object:
+
+```python
+Workspace(
+    source=RecordingSource(...),
+    delivery=WindowDelivery(),          # optional
+    analysis=RecordingAnalysis(),
+    presentation=RecordingPresentation(),
+    annotator=RecordingAnnotator(),     # optional
+    exporter=RecordingExporter(),       # optional
+)
+```
+
+A pipeline may use a helper such as `recording_source(root)` to construct and
+return one of these objects. The helper is not itself a lifecycle hook; the
+value returned to `Workspace` must still inherit the corresponding framework
+base class. Structural lookalikes are rejected.
+
 ### What `create_workspace()` constructs
 
-`create_workspace(config)` must return one `AnalysisWorkspace`. These are the
+`create_workspace(config)` must return one `Workspace`. These are the
 values passed to its constructor:
 
 | Constructor value | Required | Created by | Used for |
 | --- | --- | --- | --- |
 | `identifier`, `name`, `description` | Yes | Plugin defaults; profile may override | Standalone identity and fallback catalog metadata. |
-| `source: DataSource[SourceData]` | Yes | Plugin | Discover `DataResource` records and open one domain value. |
-| `configure(data, ui)` | No | Plugin | Declare processing parameters and return one settings value. Omit it to pass `None` to `process`. |
-| `process(data, settings)` | Yes | Plugin | Perform domain computation and return arbitrary analysis products. |
-| `present(products, ui)` | Yes | Plugin | Declare display controls, views, statistics, and layout from the products. |
-| `delivery: DataDelivery[SourceData, DeliveredData]` | No | Plugin | Select a buffer, choose a segment, follow live data, or transform the opened value. |
-| `annotator: DataAnnotator[...]` | No | Plugin | Discover and persist domain-native annotations. Enables **Annotate**. |
-| `exporter: DataExporter[...]` | No | Plugin | Advertise formats/scopes and serialize domain data. Enables **Download**. |
+| `source: Source[SourceData]` | Yes | Plugin | Discover `DataResource` records and open one domain value. |
+| `analysis: Analysis[...]` | Yes | Plugin | A pipeline-specific object implementing `process()` and optionally overriding `configure()`. |
+| `presentation: Presentation[...]` | Yes | Plugin | A pipeline-specific object implementing `present()` for display controls, views, statistics, and layout. |
+| `delivery: Delivery[SourceData, DeliveredData]` | No | Plugin | Select a buffer, choose a segment, follow live data, or transform the opened value. |
+| `annotator: Annotator[...]` | No | Plugin | Discover and persist domain-native annotations. Enables **Annotate**. |
+| `exporter: Exporter[...]` | No | Plugin | Advertise formats/scopes and serialize domain data. Enables **Download**. |
 | `discovery_columns` | No | Plugin | Define sortable metadata columns populated by `DataResource.summary`. |
 | `version`, `category`, `tags` | No | Plugin defaults; profile may override display metadata | Catalog presentation and search. |
+
+### Start with only what is necessary
+
+The smallest useful workspace has three behavioral objects:
+
+```python
+Workspace(
+    identifier="results",
+    name="Results",
+    description="Inspect complete result files.",
+    source=ResultSource(),
+    analysis=ResultAnalysis(),
+    presentation=ResultPresentation(),
+)
+```
+
+Add another object only when the workflow needs the behavior it owns:
+
+| Requirement | Add or override | What becomes available |
+| --- | --- | --- |
+| Discover and open data | `Source` | Required catalog and item opening. `DirectorySource` handles common file trees. |
+| Process the complete opened value | `Analysis.process()` | Required computation; receives `settings=None` when configuration is not overridden. |
+| Display products | `Presentation.present()` | Required plots, tables, text, tabs, view switching, statistics, and display controls. |
+| Add processing parameters | `Analysis.configure()` | Processing `number`, `select`, and `toggle` controls through `ParameterContext`. |
+| Select buffers, windows, or events | `Delivery` | Static, seek, live, windowed, segmented, refresh, and overview behavior through `DeliveryContext`. |
+| Read or write annotations | `Annotator` | Framework annotation menu, fields, timeline markers, and plot-bound selection values. |
+| Download domain data | `Exporter` | Framework download menu with plugin-defined scopes and formats. |
+| Add catalog columns | `DiscoveryColumn` values | Searchable and sortable per-item metadata. |
+
+`process()` deliberately receives no UI object. It consumes delivered domain
+data plus typed settings and returns domain products. This keeps numerical work
+testable outside Sigvue. Timeline UI belongs to `Delivery`, processing controls
+belong to `Analysis.configure()`, and display controls and layout belong to
+`Presentation.present()`.
 
 The factory does **not** construct `DeliveryContext`, `ParameterContext`,
 `ViewContext`, `PageDefinition`, `PlaybackConfiguration`, or `OpenedItem`. The framework creates those objects
@@ -103,13 +172,15 @@ Public object ownership is intentionally narrow:
 
 | Public object | Who creates it? | Where it is used |
 | --- | --- | --- |
-| `AnalysisWorkspace` | Plugin factory | Returned from `create_workspace()`. |
-| `DataSource` implementation | Plugin factory | Passed as required `source=`. |
+| `Workspace` | Plugin factory | Returned from `create_workspace()`. |
+| `Source` subclass or `DirectorySource` | Plugin factory | Passed as required `source=`. |
 | `DirectorySource` | Plugin factory | Optional concrete replacement for writing a custom source. |
 | `DataResource` | Source | Returned by `discover()`; later passed back to `open()`. |
-| `DataDelivery` implementation | Plugin factory | Passed as optional `delivery=`. |
+| `Delivery` subclass | Plugin factory | Passed as optional `delivery=`. |
+| `Analysis` subclass | Plugin | Passed as required `analysis=`; implements `process()` and optionally `configure()`. |
+| `Presentation` subclass | Plugin | Passed as required `presentation=`; implements `present()`. |
 | `DiscoveryColumn` | Plugin factory | Passed in optional `discovery_columns=`. |
-| `DataAnnotator` / `DataExporter` | Plugin factory | Passed as optional capability objects. |
+| `Annotator` / `Exporter` | Plugin factory | Passed as optional capability objects. |
 | `AnnotationField`, `CapabilityChoice` | Plugin capability | Advertise framework-rendered capability inputs. |
 | `AnnotationRequest`, `ExportRequest` | Framework | Passed into plugin capability methods. |
 | `DeliveryContext` | Framework | Passed into delivery for timeline and buffer selection. |
@@ -123,15 +194,14 @@ be omitted:
 
 ```python
 def create_workspace(config):
-    return AnalysisWorkspace(
+    return Workspace(
         identifier="my-analysis",                 # required fallback metadata
         name="My Analysis",                       # required fallback metadata
         description="Inspect domain recordings.", # required fallback metadata
-        source=MySource(config["data_root"]),      # required DataSource
-        configure=configure,                       # optional callable
-        process=process,                           # required callable
-        present=present,                           # required callable
-        delivery=MyDelivery(),                     # optional DataDelivery
+        source=MySource(config["data_root"]),      # required Source
+        delivery=MyDelivery(),                     # optional Delivery
+        analysis=MyAnalysis(),                     # required Analysis object
+        presentation=MyPresentation(),             # required Presentation object
         annotator=MyAnnotator(),                   # optional capability
         exporter=MyExporter(),                     # optional capability
         discovery_columns=MY_COLUMNS,              # optional catalog schema
@@ -146,13 +216,13 @@ def create_workspace(config):
 classDiagram
     direction LR
 
-    class AnalysisWorkspace {
+    class Workspace {
         +metadata
         +discover_items()
         +open_item(item_id)
     }
-    class DataSource {
-        <<required protocol>>
+    class Source {
+        <<framework base object>>
         +discover() Iterable~DataResource~
         +open(resource) SourceData
     }
@@ -165,20 +235,15 @@ classDiagram
         +source: object
         +summary: dict
     }
-    class DataDelivery {
-        <<optional protocol>>
+    class Delivery {
+        <<framework base object>>
         +prepare(source_data, ui) DeliveredData
     }
-    class ConfigureFunction {
-        <<optional callable>>
+    class Analysis {
+        +process(delivered_data, settings) Products
         +configure(delivered_data, ui) Settings
     }
-    class ProcessFunction {
-        <<required callable>>
-        +process(delivered_data, settings) Products
-    }
-    class PresentFunction {
-        <<required callable>>
+    class Presentation {
         +present(products, ui) None
     }
     class ParameterContext {
@@ -199,38 +264,38 @@ classDiagram
         +display controls
         +statistics
     }
-    class DataAnnotator {
-        <<optional protocol>>
+    class Annotator {
+        <<optional framework base object>>
     }
-    class DataExporter {
-        <<optional protocol>>
+    class Exporter {
+        <<optional framework base object>>
     }
 
-    AnalysisWorkspace *-- DataSource : source
-    DirectorySource ..|> DataSource : implements
-    DataSource --> DataResource : discovers
-    AnalysisWorkspace o-- DataDelivery : delivery
-    AnalysisWorkspace o-- ConfigureFunction : configure
-    AnalysisWorkspace --> ProcessFunction : process
-    AnalysisWorkspace --> PresentFunction : present
-    AnalysisWorkspace o-- DataAnnotator : annotator
-    AnalysisWorkspace o-- DataExporter : exporter
-    DataDelivery ..> DeliveryContext : receives
-    ConfigureFunction ..> ParameterContext : receives
-    PresentFunction ..> ViewContext : receives
+    Workspace *-- Source : source
+    DirectorySource ..|> Source : implements
+    Source --> DataResource : discovers
+    Workspace o-- Delivery : delivery
+    Workspace --> Analysis : analysis
+    Workspace --> Presentation : presentation
+    Workspace o-- Annotator : annotator
+    Workspace o-- Exporter : exporter
+    Delivery ..> DeliveryContext : receives
+    Analysis ..> ParameterContext : configure receives
+    Presentation ..> ViewContext : present receives
 ```
 
 ### Typed data path
 
-`DataSource` and `DataDelivery` are public, generic, runtime-checkable
-interfaces. Their type parameters describe the complete data path:
+`Source`, `Delivery`, `Analysis`, and `Presentation` are public generic base
+objects. Pipeline-specific subclasses implement their named lifecycle methods.
+Together their type parameters describe the complete data path:
 
 ```mermaid
 flowchart LR
     Resource["DataResource"]
-    Source["DataSource&lt;SourceData&gt;"]
+    Source["Source&lt;SourceData&gt;"]
     Opened["SourceData<br/>domain reader or loaded object"]
-    Delivery["DataDelivery&lt;SourceData, DeliveredData&gt;<br/>optional"]
+    Delivery["Delivery&lt;SourceData, DeliveredData&gt;<br/>optional"]
     Delivered["DeliveredData<br/>buffer, segment, result, or transformed value"]
     Input["ProcessingInput<br/>SourceData or DeliveredData"]
     Configure["configure(ProcessingInput, ParameterContext)<br/>returns Settings"]
@@ -249,23 +314,32 @@ flowchart LR
     Process --> Present
 ```
 
-`AnalysisWorkspace` has typed constructor overloads connecting these stages. A
-type checker therefore catches a delivery that expects the wrong reader type,
-a configuration or processing function that expects the wrong delivered type,
-or presentation code that expects the wrong product type.
+The objects make every boundary explicit at construction time: the workspace
+cannot accept a look-alike object that merely happens to have a method with the
+right name. Type checkers can also verify individual `Source`, `Delivery`,
+`Analysis`, and `Presentation` definitions.
 The installed package includes a `py.typed` marker, so these checks also work
 when `sigvue` is installed from a wheel.
 
-Implementations should explicitly inherit the interfaces when practical; this
-makes the contract visible and lets type checkers verify the whole path:
+Subclass the framework base objects when behavior needs state; this makes the
+contract visible and lets type checkers verify each boundary:
 
 ```python
 from collections.abc import Iterable
 
-from sigvue.plugin import DataDelivery, DataResource, DataSource, DeliveryContext
+from sigvue.plugin import (
+    Analysis,
+    DataResource,
+    Delivery,
+    DeliveryContext,
+    ParameterContext,
+    Presentation,
+    Source,
+    ViewContext,
+)
 
 
-class MySource(DataSource[Recording]):
+class MySource(Source[Recording]):
     def discover(self) -> Iterable[DataResource]:
         ...
 
@@ -273,23 +347,35 @@ class MySource(DataSource[Recording]):
         ...
 
 
-class WindowDelivery(DataDelivery[Recording, SampleWindow]):
+class WindowDelivery(Delivery[Recording, SampleWindow]):
     def prepare(
         self,
         recording: Recording,
         ui: DeliveryContext,
     ) -> SampleWindow:
         ...
+
+
+class MyAnalysis(Analysis[SampleWindow, Settings, Products]):
+    def configure(self, data: SampleWindow, ui: ParameterContext) -> Settings:
+        ...
+
+    def process(self, data: SampleWindow, settings: Settings | None) -> Products:
+        ...
+
+
+class MyPresentation(Presentation[Products]):
+    def present(self, products: Products, ui: ViewContext) -> None:
+        ...
 ```
 
-Explicitly inherited methods are abstract, so an incomplete subclass cannot be
-instantiated. Inheritance is not required: structurally compatible objects also
-satisfy the interfaces. At runtime, `AnalysisWorkspace` validates that sources
-provide `discover()` and `open()`, deliveries provide `prepare()`, `process`
-and `present` are callable, optional `configure` is callable when supplied,
-discovery returns `DataResource` objects, and resource identifiers
-are unique. Failures identify the missing method or invalid discovery value
-directly.
+`DirectorySource` handles the common filesystem case. All six behavioral base
+classes are abstract, so incomplete pipeline objects fail immediately when
+instantiated. At runtime, `Workspace` requires actual framework objects,
+validates discovered `DataResource` values, and rejects duplicate resource
+identifiers. There is one accepted
+spelling for each boundary: `source=`, `delivery=`, `analysis=`,
+`presentation=`, `annotator=`, and `exporter=`.
 
 ### Request lifecycle
 
@@ -303,15 +389,14 @@ sequenceDiagram
     participant Browser as Browser UI
     participant Runtime as Sigvue runtime
     participant Factory as create_workspace
-    participant Source as DataSource
+    participant Source as Source
     participant DeliveryContext
-    participant Delivery as DataDelivery
-    participant Configure as configure
-    participant Process as process
-    participant Present as present
+    participant Delivery as Delivery
+    participant Analysis
+    participant Presentation
 
     Runtime->>Factory: create_workspace(config)
-    Factory-->>Runtime: AnalysisWorkspace
+    Factory-->>Runtime: Workspace
 
     User->>Browser: Open workspace
     Browser->>Runtime: List discovered items
@@ -332,14 +417,14 @@ sequenceDiagram
     end
 
     opt configure supplied
-        Runtime->>Configure: configure(DeliveredData or SourceData, ParameterContext)
-        Configure-->>Runtime: Settings
+        Runtime->>Analysis: configure(data, ParameterContext)
+        Analysis-->>Runtime: Settings
     end
     Note over Runtime: Without configure, Settings is None
-    Runtime->>Process: process(DeliveredData or SourceData, Settings)
-    Process-->>Runtime: Products
-    Runtime->>Present: present(Products, ViewContext)
-    Present-->>Runtime: controls, tabs, views, and stats
+    Runtime->>Analysis: process(data, Settings)
+    Analysis-->>Runtime: Products
+    Runtime->>Presentation: present(Products, ViewContext)
+    Presentation-->>Runtime: controls, tabs, views, and stats
     Runtime->>Runtime: validate page definition
     Runtime-->>Browser: rendered page and update policy
 ```
@@ -364,7 +449,7 @@ from typing import TypedDict
 
 import plotly.graph_objects as go
 
-from sigvue.plugin import AnalysisWorkspace, DirectorySource, ParameterContext, ViewContext
+from sigvue.plugin import Analysis, DirectorySource, ParameterContext, Presentation, ViewContext, Workspace
 
 
 class ResultFile(TypedDict):
@@ -380,45 +465,48 @@ class Settings:
     scale: float
 
 
-def configure(result: ResultFile, ui: ParameterContext) -> Settings:
-    return Settings(scale=float(ui.number("scale", label="Scale", default=1.0, step=0.1)))
+class ResultAnalysis(Analysis[ResultFile, Settings, list[float]]):
+    def configure(self, result: ResultFile, ui: ParameterContext) -> Settings:
+        return Settings(scale=float(ui.number("scale", label="Scale", default=1.0, step=0.1)))
+
+    def process(self, result: ResultFile, settings: Settings | None) -> list[float]:
+        if settings is None:
+            raise RuntimeError("Result analysis requires configured settings")
+        return [settings.scale * value for value in result["values"]]
 
 
-def process(result: ResultFile, settings: Settings) -> list[float]:
-    return [settings.scale * value for value in result["values"]]
+class ResultPresentation(Presentation[list[float]]):
+    def present(self, values: list[float], ui: ViewContext) -> None:
+        figure = go.Figure(go.Scatter(y=values, name="Value"))
+        with ui.tab("Values"):
+            ui.place_parameters("scale", label="Processing")
+            ui.plot(figure, key="values")
 
 
-def present(values: list[float], ui: ViewContext) -> None:
-    figure = go.Figure(go.Scatter(y=values, name="Value"))
-    with ui.tab("Values"):
-        ui.place_parameters("scale", label="Processing")
-        ui.plot(figure, key="values")
-
-
-def create_workspace(config: Mapping[str, object]) -> AnalysisWorkspace:
+def create_workspace(config: Mapping[str, object]) -> Workspace:
     source = DirectorySource[ResultFile](
         Path(str(config["data_root"])),
         pattern="*.result.json",
         loader=load_result,
     )
-    return AnalysisWorkspace(
+    return Workspace(
         # Required fallback metadata; browser.toml may override it per instance.
         identifier="result-analysis",
         name="Result Analysis",
         description="Inspect result files.",
         # Required contracts.
         source=source,
-        configure=configure,
-        process=process,
-        present=present,
+        analysis=ResultAnalysis(),
+        presentation=ResultPresentation(),
     )
 ```
 
 This example uses all three lifecycle stages because it has a processing
-parameter. The required contract is only one source, `process`, and `present`.
-When `configure` is omitted, Sigvue calls `process(data, None)`. When present,
-`configure` owns processing inputs, `process` remains ordinary domain code with
-no UI dependency, and `present` owns layout. `ui.place_parameters(...)` can put
+parameter. The required contract is one source, one analysis, and one
+presentation. When an `Analysis` subclass does not override `configure`, its
+base implementation returns `None` to `process`. When overridden,
+`configure` owns processing inputs, `process` remains domain code with no
+presentation dependency, and `present` owns layout. `ui.place_parameters(...)` can put
 a configured control inside a particular tab or switched view; otherwise it
 remains in Details. Add delivery or capabilities only when the workflow needs
 them.
@@ -438,7 +526,7 @@ rendering, null display, search, and sorting:
 ```python
 from pathlib import Path
 
-from sigvue.plugin import AnalysisWorkspace, DataResource, DiscoveryColumn
+from sigvue.plugin import DataResource, DiscoveryColumn, Workspace
 
 columns = (
     DiscoveryColumn("date", "Date", kind="datetime"),
@@ -457,7 +545,7 @@ resource = DataResource(
     },
 )
 
-workspace = AnalysisWorkspace(
+workspace = Workspace(
     # ...normal workspace arguments...
     discovery_columns=columns,
 )
@@ -567,7 +655,7 @@ while leaving processing and presentation unchanged:
 ```python
 from dataclasses import dataclass
 
-from sigvue.plugin import DataDelivery, DeliveryContext, ParameterContext, ViewContext
+from sigvue.plugin import Analysis, Delivery, DeliveryContext, ParameterContext, Presentation, ViewContext
 
 
 @dataclass(frozen=True)
@@ -576,7 +664,7 @@ class SampleWindow:
     samples: list[complex]
 
 
-class FrameDelivery(DataDelivery[Recording, SampleWindow]):
+class FrameDelivery(Delivery[Recording, SampleWindow]):
     def prepare(
         self,
         recording: Recording,
@@ -591,19 +679,21 @@ class FrameDelivery(DataDelivery[Recording, SampleWindow]):
         return SampleWindow(position, recording.read(position, frame_seconds))
 
 
-def configure(window: SampleWindow, ui: ParameterContext) -> Settings:
-    ...
+class FrameAnalysis(Analysis[SampleWindow, Settings, Products]):
+    def configure(self, window: SampleWindow, ui: ParameterContext) -> Settings:
+        ...
+
+    def process(self, window: SampleWindow, settings: Settings | None) -> Products:
+        ...
 
 
-def process(window: SampleWindow, settings: Settings) -> Products:
-    ...
-
-
-def present(products: Products, ui: ViewContext) -> None:
-    ...
+class FramePresentation(Presentation[Products]):
+    def present(self, products: Products, ui: ViewContext) -> None:
+        ...
 ```
 
-Pass it to `AnalysisWorkspace(delivery=FrameDelivery(), ...)`. The framework
+Pass `FrameDelivery()`, `FrameAnalysis()`, and `FramePresentation()` to the
+corresponding `Workspace` fields. The framework
 calls `source.open`, `delivery.prepare`, optional `configure`, `process`, and
 `present` for the requested state, reusing cached products when only
 presentation state changes.
@@ -702,30 +792,48 @@ Regular segments with gaps or overlaps can instead use `ui.segmented(duration=..
 
 For non-playback refresh, call `ui.refresh(every=1.0)`. The framework prevents overlapping refresh requests and updates mounted views.
 
-## Configuration and presentation UI
+## Framework-created control objects
 
-`ParameterContext`, received by `configure`, intentionally exposes only
-`number`, `select`, and `toggle`. That keeps processing inputs separate from
-figure construction and layout. `ViewContext`, received by `present`, provides
-the display and layout surface. These are real typed protocols, not aliases of
-the internal request context, so an editor or type checker exposes only the API
-appropriate to each lifecycle stage. `DeliveryContext` likewise contains only
-delivery parameters plus timeline, refresh, and item-cache operations.
+Plugins do not construct controls directly. The framework passes a restricted,
+request-scoped API object into each behavioral method. Calling that object's
+methods declares controls and returns the current typed value. An editor or
+type checker therefore exposes only the operations valid at that lifecycle
+stage.
 
-| Method | Purpose |
+| Receiving method | Framework API object | Available controls and helpers |
+| --- | --- | --- |
+| `Delivery.prepare(data, ui)` | `DeliveryContext` | `number`, `select`, `toggle`, `playback`, `windowed`, `segmented`, `refresh`, `once`, `time`, and `following_live`. |
+| `Analysis.configure(data, ui)` | `ParameterContext` | Processing-only `number`, `select`, and `toggle`. Return an ordinary typed settings object. |
+| `Analysis.process(data, settings)` | None | No browser API by design; perform deterministic domain processing. |
+| `Presentation.present(products, ui)` | `ViewContext` | Display controls, layout, renderables, statistics, theme, and presentation caching. |
+| `Annotator.fields` | `AnnotationField` values | Text, textarea, select, and number fields; optional Plotly-axis or box-selection bindings. |
+| `Exporter.scopes` / `formats` | `CapabilityChoice` values | Plugin-defined download scope and format dropdown choices. |
+
+`ViewContext` is the largest surface because it owns the displayed page:
+
+| `ViewContext` method | Purpose |
 | --- | --- |
-| `ui.tab(label, columns=..., update=...)` | Add a tab and choose its layout and static/dynamic lifecycle. |
-| `ui.plot(figure, key=..., axis_navigation=...)` | Display a native Plotly or Matplotlib figure; use `"bounded"` to constrain Plotly navigation to declared ranges. |
-| `ui.table(value, key=...)` | Display tabular data. |
-| `ui.text(value, key=...)` | Display text or Markdown diagnostics. |
-| `ui.number(...)`, `ui.select(...)`, `ui.toggle(...)` | Declare display-only parameters during presentation. |
-| `ui.colormap(...)` | Add a compact Plotly colormap picker with low-to-high gradient previews. |
-| `ui.limits(...)` | Add validated paired numeric bounds. |
-| `ui.parameter_group(...)` | Place parameters directly inside the current view. |
-| `ui.place_parameters(...)` | Place parameters previously declared by `configure` inside the current view. |
-| `ui.view_switcher(...)` | Switch local views with buttons or a dropdown without creating another tab. |
-| `ui.trace_style(...)` | Add a compact color, width, opacity, line-style, and marker picker. |
-| `ui.stat(label, value)` | Add workflow-specific runtime or result details. |
+| `number`, `select`, `toggle`, `color` | Declare display-only controls. |
+| `colormap` | Add a compact colormap picker with low-to-high previews. |
+| `limits` | Add validated paired numeric bounds. |
+| `trace_style` | Add color, width, opacity, line-style, and marker controls; returns a Plotly-ready `TraceStyle`. |
+| `tab` | Add a tab with a column layout and static or dynamic update policy. |
+| `group` | Nest layout content in a row or column group. |
+| `parameter_group` | Place controls declared in the current presentation region. |
+| `place_parameters` | Place processing controls previously declared by `Analysis.configure()`. |
+| `switcher` / `switcher_view` | Build arbitrary switched content incrementally. |
+| `view_switcher` | Build button or dropdown switched views from a mapping. |
+| `plot` | Display a native Plotly or Matplotlib figure. |
+| `table`, `text`, `view` | Display mixed tabular, textual, or generic renderable content. |
+| `stat` | Add workflow-specific details or diagnostics. |
+| `once` | Cache presentation-only work by key and declared dependencies. |
+| `theme` | Read the active `light` or `dark` theme for plugin-specific styling. |
+
+Control ownership determines recomputation. Delivery and processing-control
+changes can redeliver or reprocess data. Presentation-control changes rebuild
+the view from cached products. Tabs and view switchers do not become processing
+settings unless the plugin explicitly declares a processing control for that
+purpose.
 
 Plotly figures remain interactive. Matplotlib figures are rendered as responsive PNG images. Tabs can mix plots, tables, and text.
 For plots whose data bounds are also their valid navigation bounds, set
@@ -751,7 +859,7 @@ with ui.tab("Reference", update="static"):
 ## Optional annotation and export capabilities
 
 Annotation and download are plugin-owned capabilities. If a workspace does not pass an
-`annotator=` or `exporter=` to `AnalysisWorkspace`, the corresponding header menu is not
+`annotator=` or `exporter=` to `Workspace`, the corresponding header menu is not
 shown. The framework supplies typed field/choice helpers, renders the controls, and runs
 exports on its background executor; the plugin decides how annotations are persisted and
 how its domain data is serialized.
@@ -762,8 +870,8 @@ sequenceDiagram
     participant Browser as Browser UI
     participant Runtime as Sigvue runtime
     participant Delivery as Current delivery
-    participant Annotator as DataAnnotator
-    participant Exporter as DataExporter
+    participant Annotator as Annotator
+    participant Exporter as Exporter
 
     opt annotator configured
         Runtime->>Annotator: discover(SourceData)
@@ -788,8 +896,8 @@ sequenceDiagram
     end
 ```
 
-Implement `DataAnnotator` to discover timeline annotations and add one from the current
-delivered value. Implement `DataExporter` to advertise scope and format choices and write
+Subclass `Annotator` to discover timeline annotations and add one from the current
+delivered value. Subclass `Exporter` to advertise scope and format choices and write
 one result file into the supplied directory. `CapabilityChoice`, `AnnotationField`,
 `AnnotationPlotBinding`, `Annotation`, `AnnotationRequest`, and `ExportRequest` are
 available from `sigvue.plugin`.
@@ -850,7 +958,12 @@ Workspace packages, `browser.toml`, and data remain external to the executable.
 
 ```bash
 python -m pip install -e ".[build]"
-PYTHONPATH=src python -m unittest discover -s tests -q
+python -m pip install pytest
+python -m pytest -q tests
+python -m pytest -q example_pipelines/tests
 ```
+
+The publish workflow runs the framework and bundled-pipeline suites as separate
+required steps before versioning or building a distribution.
 
 Neutral, runnable workspace packages are maintained separately so the framework distribution stays format-independent: [Sigvue Examples](https://github.com/briday1/sigvue-examples).

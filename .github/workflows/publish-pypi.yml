@@ -37,8 +37,11 @@ jobs:
       - name: Install package and release tools
         run: python -m pip install --upgrade pip build pytest twine -e .
 
-      - name: Run tests
-        run: python -m pytest -q
+      - name: Run framework tests
+        run: python -m pytest -q tests
+
+      - name: Run bundled example-pipeline tests
+        run: python -m pytest -q example_pipelines/tests
 
       - name: Generate version from PyPI and repository tags
         id: set-version
@@ -125,7 +128,7 @@ jobs:
       - name: Build and validate distribution
         run: |
           python -m build
-          python -m twine check dist/*
+          python -m twine check dist/*.whl dist/*.tar.gz
 
       - name: Commit version and tag release
         env:

@@ -6,19 +6,23 @@ import plotly.graph_objects as go
 
 from sigvue.core.plugin import AnalysisContext
 from sigvue.plugin import (
-    AnalysisWorkspace,
-    DataDelivery,
+    Analysis,
+    Annotator,
+    Delivery,
     DataResource,
     DeliveryContext,
     DiscoveryColumn,
-    DataSource,
     DirectorySource,
+    Presentation,
+    Exporter,
     Segment,
+    Source,
     ViewContext,
+    Workspace,
 )
 
 
-class ExampleSource:
+class ExampleSource(Source[list[int]]):
     def discover(self):
         return [DataResource("recording", "Recording", source=[1, 2, 3, 4])]
 
@@ -34,6 +38,40 @@ def identity_process(data, settings):
     return data
 
 
+def analysis_object(process, configure=None):
+    if configure is None:
+        class TestAnalysis(Analysis):
+            def process(self, data, settings):
+                return process(data, settings)
+
+        return TestAnalysis()
+
+    class ConfiguredTestAnalysis(Analysis):
+        def configure(self, data, ui):
+            return configure(data, ui)
+
+        def process(self, data, settings):
+            return process(data, settings)
+
+    return ConfiguredTestAnalysis()
+
+
+def presentation_object(present):
+    class TestPresentation(Presentation):
+        def present(self, products, ui):
+            present(products, ui)
+
+    return TestPresentation()
+
+
+def make_workspace(*, process, present, configure=None, **kwargs):
+    return Workspace(
+        **kwargs,
+        analysis=analysis_object(process, configure),
+        presentation=presentation_object(present),
+    )
+
+
 class PluginAuthoringTests(unittest.TestCase):
     def test_lifecycle_context_protocols_expose_only_their_public_stage(self):
         self.assertTrue(hasattr(DeliveryContext, "number"))
@@ -44,11 +82,13 @@ class PluginAuthoringTests(unittest.TestCase):
 
     def test_workspace_uses_only_the_split_lifecycle_contract(self):
         with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'analyze'"):
-            AnalysisWorkspace(
+            Workspace(
                 identifier="legacy",
                 name="Legacy",
                 description="Old contract",
                 source=ExampleSource(),
+                analysis=analysis_object(identity_process),
+                presentation=presentation_object(lambda data, ui: None),
                 analyze=lambda data, ui: None,
             )
 
@@ -70,7 +110,7 @@ class PluginAuthoringTests(unittest.TestCase):
             with ui.tab("Signal"):
                 ui.plot(go.Figure(go.Scatter(y=products, line={"color": color})), key="signal")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="split",
             name="Split",
             description="Split lifecycle",
@@ -93,7 +133,7 @@ class PluginAuthoringTests(unittest.TestCase):
     def test_timeline_selection_is_part_of_the_process_cache_key(self):
         calls = {"process": 0}
 
-        class PlaybackDelivery:
+        class PlaybackDelivery(Delivery[list[int], list[int]]):
             def prepare(self, source_data, ui):
                 start = round(ui.playback(duration=3.0, step=1.0))
                 return source_data[start : start + 1]
@@ -107,7 +147,7 @@ class PluginAuthoringTests(unittest.TestCase):
             with ui.tab("Signal"):
                 ui.plot(go.Figure(go.Scatter(y=products)), key="signal")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="timeline-cache",
             name="Timeline cache",
             description="Timeline cache",
@@ -131,7 +171,7 @@ class PluginAuthoringTests(unittest.TestCase):
                 ui.place_parameters("threshold", label="Processing", columns=2)
                 ui.plot(go.Figure(go.Scatter(y=[products])), key="signal")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="placed",
             name="Placed",
             description="Placed parameters",
@@ -151,7 +191,7 @@ class PluginAuthoringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Only SI"):
             DiscoveryColumn("date", "Date", "datetime", unit="s")
         with self.assertRaisesRegex(ValueError, "keys must be unique"):
-            AnalysisWorkspace(
+            make_workspace(
                 identifier="duplicate-columns",
                 name="Duplicate columns",
                 description="test",
@@ -162,27 +202,131 @@ class PluginAuthoringTests(unittest.TestCase):
                 discovery_columns=(column, column),
             )
 
-    def test_public_source_and_delivery_protocols_are_runtime_checkable(self):
-        class TypedDelivery(DataDelivery[list[int], tuple[int, ...]]):
+    def test_public_source_and_delivery_are_explicit_framework_objects(self):
+        class TypedDelivery(Delivery[list[int], tuple[int, ...]]):
             def prepare(self, source_data: list[int], ui: AnalysisContext) -> tuple[int, ...]:
                 return tuple(source_data)
 
-        self.assertIsInstance(ExampleSource(), DataSource)
-        self.assertIsInstance(TypedDelivery(), DataDelivery)
+        self.assertIsInstance(ExampleSource(), Source)
+        self.assertIsInstance(TypedDelivery(), Delivery)
 
-        class IncompleteDelivery(DataDelivery[list[int], tuple[int, ...]]):
+        class IncompleteDelivery(Delivery[list[int], tuple[int, ...]]):
             pass
 
-        with self.assertRaisesRegex(TypeError, r"abstract class IncompleteDelivery.*prepare"):
+        with self.assertRaisesRegex(TypeError, r"abstract method prepare"):
             IncompleteDelivery()
+
+    def test_source_and_delivery_subclasses_form_an_explicit_pipeline(self):
+        resource = DataResource("one", "One", source=5)
+
+        class OneSource(Source[int]):
+            def discover(self):
+                return (resource,)
+
+            def open(self, selected):
+                return selected.source
+
+        class DoubleDelivery(Delivery[int, int]):
+            def prepare(self, value, ui):
+                return value * 2
+
+        def present(value, ui):
+            with ui.tab("Value"):
+                ui.text(str(value), key="value")
+
+        workspace = Workspace(
+            identifier="callbacks",
+            name="Callbacks",
+            description="Callback-backed framework objects",
+            source=OneSource(),
+            delivery=DoubleDelivery(),
+            analysis=analysis_object(lambda value, settings: value + 1),
+            presentation=presentation_object(present),
+        )
+        self.assertEqual(["one"], [item.identifier for item in workspace.discover_items()])
+        opened = workspace.open_item("one")
+        self.assertEqual("11", opened.page.views[0].callback({}))
+
+    def test_workspace_rejects_structural_analysis_and_presentation_lookalikes(self):
+        class LooksLikeAnalysis:
+            process = staticmethod(identity_process)
+
+        with self.assertRaisesRegex(TypeError, "analysis must be an Analysis object"):
+            Workspace(
+                identifier="lookalike-analysis",
+                name="Lookalike",
+                description="Not a framework object",
+                source=ExampleSource(),
+                analysis=LooksLikeAnalysis(),
+                presentation=presentation_object(lambda value, ui: None),
+            )
+
+        with self.assertRaisesRegex(TypeError, "presentation must be a Presentation object"):
+            Workspace(
+                identifier="lookalike-presentation",
+                name="Lookalike",
+                description="Not a framework object",
+                source=ExampleSource(),
+                analysis=analysis_object(identity_process),
+                presentation=object(),
+            )
+
+        class LooksLikeAnnotator:
+            fields = ()
+
+            def discover(self, source_data):
+                return ()
+
+            def annotate(self, source_data, delivered_data, request):
+                return None
+
+        with self.assertRaisesRegex(TypeError, "annotator must be an Annotator object"):
+            Workspace(
+                identifier="lookalike-annotator",
+                name="Lookalike",
+                description="Not a framework object",
+                source=ExampleSource(),
+                analysis=analysis_object(identity_process),
+                presentation=presentation_object(lambda value, ui: None),
+                annotator=LooksLikeAnnotator(),
+            )
+
+        class LooksLikeExporter:
+            scopes = ()
+            formats = ()
+
+            def export(self, source_data, delivered_data, request, directory):
+                return directory
+
+        with self.assertRaisesRegex(TypeError, "exporter must be an Exporter object"):
+            Workspace(
+                identifier="lookalike-exporter",
+                name="Lookalike",
+                description="Not a framework object",
+                source=ExampleSource(),
+                analysis=analysis_object(identity_process),
+                presentation=presentation_object(lambda value, ui: None),
+                exporter=LooksLikeExporter(),
+            )
+
+        class MissingAnnotationMethods(Annotator):
+            pass
+
+        class MissingExportMethods(Exporter):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "abstract method"):
+            MissingAnnotationMethods()
+        with self.assertRaisesRegex(TypeError, "abstract method"):
+            MissingExportMethods()
 
     def test_workspace_rejects_incomplete_contracts_with_actionable_errors(self):
         class MissingOpen:
             def discover(self):
                 return []
 
-        with self.assertRaisesRegex(TypeError, r"source must implement .*missing open\(\)"):
-            AnalysisWorkspace(
+        with self.assertRaisesRegex(TypeError, r"source must be a Source object"):
+            make_workspace(
                 identifier="invalid-source",
                 name="Invalid source",
                 description="Missing open",
@@ -192,8 +336,8 @@ class PluginAuthoringTests(unittest.TestCase):
                 present=lambda data, ui: None,
             )
 
-        with self.assertRaisesRegex(TypeError, r"delivery must implement .*missing prepare\(\)"):
-            AnalysisWorkspace(
+        with self.assertRaisesRegex(TypeError, r"delivery must be a Delivery object"):
+            make_workspace(
                 identifier="invalid-delivery",
                 name="Invalid delivery",
                 description="Missing prepare",
@@ -204,26 +348,26 @@ class PluginAuthoringTests(unittest.TestCase):
                 present=lambda data, ui: None,
             )
 
-        with self.assertRaisesRegex(TypeError, r"configure must be callable.*or omitted"):
-            AnalysisWorkspace(
-                identifier="invalid-analysis",
-                name="Invalid analysis",
-                description="Non-callable analysis",
-                source=ExampleSource(),
-                configure=object(),
-                process=identity_process,
-                present=lambda data, ui: None,
-            )
+        class MissingProcess(Analysis):
+            pass
+
+        class MissingPresent(Presentation):
+            pass
+
+        with self.assertRaisesRegex(TypeError, r"abstract method process"):
+            MissingProcess()
+        with self.assertRaisesRegex(TypeError, r"abstract method present"):
+            MissingPresent()
 
     def test_source_discovery_validates_resources_and_unique_identifiers(self):
-        class InvalidResources:
+        class InvalidResources(Source[object]):
             def discover(self):
                 return ["not a resource"]
 
             def open(self, resource):
                 return resource
 
-        invalid = AnalysisWorkspace(
+        invalid = make_workspace(
             identifier="invalid-resources",
             name="Invalid resources",
             description="Wrong discovery value",
@@ -235,14 +379,14 @@ class PluginAuthoringTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, r"item 0 must be DataResource, got str"):
             invalid.discover_items()
 
-        class DuplicateResources:
+        class DuplicateResources(Source[object]):
             def discover(self):
                 return [DataResource("same", "First", 1), DataResource("same", "Second", 2)]
 
             def open(self, resource):
                 return resource.source
 
-        duplicate = AnalysisWorkspace(
+        duplicate = make_workspace(
             identifier="duplicate-resources",
             name="Duplicate resources",
             description="Duplicate discovery identifiers",
@@ -265,7 +409,7 @@ class PluginAuthoringTests(unittest.TestCase):
                 with ui.tab("Values"):
                     ui.plot(go.Figure(go.Scatter(y=data)), key="values")
 
-            workspace = AnalysisWorkspace(
+            workspace = make_workspace(
                 identifier="files",
                 name="Files",
                 description="Directory files",
@@ -287,7 +431,7 @@ class PluginAuthoringTests(unittest.TestCase):
                 ui.plot(go.Figure(go.Scatter(y=data[:size])), key="raw")
                 ui.plot(go.Figure(go.Scatter(y=list(reversed(data[:size])))), key="reversed")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="example",
             name="Example",
             description="Example analysis",
@@ -308,7 +452,7 @@ class PluginAuthoringTests(unittest.TestCase):
         self.assertEqual((1, 2, 3, 4), figure.data[0].y)
 
     def test_delivery_policy_prepares_data_before_analysis(self):
-        class WindowDelivery:
+        class WindowDelivery(Delivery[list[int], list[int]]):
             def prepare(self, source_data, ui):
                 size = ui.number("buffer_size", default=2, minimum=1)
                 start = round(ui.playback(duration=2.0, step=1.0))
@@ -318,7 +462,7 @@ class PluginAuthoringTests(unittest.TestCase):
             with ui.tab("Window"):
                 ui.plot(go.Figure(go.Scatter(y=window)), key="window")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="delivered",
             name="Delivered",
             description="Delivery policy",
@@ -334,7 +478,7 @@ class PluginAuthoringTests(unittest.TestCase):
         self.assertIsNone(page.export)
 
     def test_windowed_delivery_receives_framework_selected_interval(self):
-        class WindowedDelivery:
+        class WindowedDelivery(Delivery[list[int], list[int]]):
             def prepare(self, source_data, ui):
                 start, end = ui.windowed(
                     duration=4.0,
@@ -350,7 +494,7 @@ class PluginAuthoringTests(unittest.TestCase):
             with ui.tab("Window"):
                 ui.plot(go.Figure(go.Scatter(y=window)), key="window")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="windowed",
             name="Windowed",
             description="Window selection",
@@ -480,7 +624,7 @@ class PluginAuthoringTests(unittest.TestCase):
             with ui.tab("Live"):
                 ui.plot(go.Figure(go.Scatter(y=data)), key="live")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="live",
             name="Live",
             description="Live analysis",
@@ -581,7 +725,7 @@ class PluginAuthoringTests(unittest.TestCase):
                     mode = ui.select("mode", label="Estimator", default="Mean", options=("Mean", "Maximum"))
                 ui.plot(go.Figure(go.Scatter(y=[threshold], name=mode)), key="result")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="inline-parameters",
             name="Inline parameters",
             description="Layout controls",
@@ -620,7 +764,7 @@ class PluginAuthoringTests(unittest.TestCase):
                             ui.table([{"Channel": 1, "NF": "7 dB"}], key="noise-table")
                         ui.plot(go.Figure(), key="noise-plot")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="mixed-switcher",
             name="Mixed switcher",
             description="Mixed switched layouts",
@@ -646,7 +790,7 @@ class PluginAuthoringTests(unittest.TestCase):
                 ui.view_switcher("Channel", {"One": figure(1), "Two": figure(2)}, key="channel", selector="buttons")
                 ui.view_switcher("Metric", {"Raw": figure(3), "Filtered": figure(4)}, key="metric", selector="dropdown")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="switchers",
             name="Switchers",
             description="Multiple local view selectors",
@@ -670,7 +814,7 @@ class PluginAuthoringTests(unittest.TestCase):
                     axis_navigation="bounded",
                 )
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="bounded-plots",
             name="Bounded plots",
             description="Explicit plot navigation",
@@ -701,7 +845,7 @@ class PluginAuthoringTests(unittest.TestCase):
             with ui.tab("Playback"):
                 ui.plot(go.Figure(go.Scatter(y=[time])), key="playback")
 
-        workspace = AnalysisWorkspace(
+        workspace = make_workspace(
             identifier="lifecycles",
             name="Lifecycles",
             description="Static and dynamic views",

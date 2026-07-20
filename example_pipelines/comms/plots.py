@@ -1,0 +1,84 @@
+"""Plotly constellation and eye-diagram views."""
+
+import numpy as np
+import plotly.graph_objects as go
+
+from sigvue.plugin import Presentation, ViewContext
+
+from ..style import ACCENT, style_figure
+from .models import CommsProducts
+
+
+QUADRATURE = "#ff8a4c"
+
+
+def present(products: CommsProducts, ui: ViewContext) -> None:
+    constellation = go.Figure(go.Scattergl(
+        x=products.symbols.real,
+        y=products.symbols.imag,
+        mode="markers",
+        marker={"color": ACCENT, "size": 6, "opacity": 0.55},
+        name=products.modulation,
+    ))
+    constellation.update_xaxes(
+        title_text="In-phase",
+        range=[-products.constellation_limit, products.constellation_limit],
+        autorange=False,
+        scaleanchor="y",
+        scaleratio=1,
+    )
+    constellation.update_yaxes(
+        title_text="Quadrature",
+        range=[-products.constellation_limit, products.constellation_limit],
+        autorange=False,
+    )
+
+    eye = go.Figure()
+    if products.eye_segments.size:
+        separators = np.full((products.eye_segments.shape[0], 1), np.nan)
+        eye_x = np.concatenate((
+            np.tile(products.eye_time, (products.eye_segments.shape[0], 1)),
+            separators,
+        ), axis=1).reshape(-1)
+        for label, values, color in (
+            ("I", products.eye_segments.real, ACCENT),
+            ("Q", products.eye_segments.imag, QUADRATURE),
+        ):
+            eye_y = np.concatenate((values, separators), axis=1).reshape(-1)
+            eye.add_trace(go.Scattergl(
+                x=eye_x,
+                y=eye_y,
+                mode="lines",
+                line={"color": color, "width": 0.8},
+                opacity=0.35,
+                name=label,
+            ))
+    eye.update_xaxes(title_text="Symbol periods", range=[0, 2], autorange=False)
+    eye.update_yaxes(
+        title_text="Amplitude",
+        range=[-products.eye_limit, products.eye_limit],
+        autorange=False,
+    )
+
+    ui.stat("Modulation", products.modulation)
+    ui.stat("Samples per symbol", products.samples_per_symbol)
+    ui.stat("Recovered symbols", products.symbols.size)
+    with ui.tab("Constellation"):
+        ui.plot(
+            style_figure(constellation, ui.theme, f"{products.modulation} constellation"),
+            key="constellation",
+            axis_navigation="bounded",
+        )
+    with ui.tab("Eye diagram"):
+        ui.plot(
+            style_figure(eye, ui.theme, f"{products.modulation} eye diagram"),
+            key="eye",
+            axis_navigation="bounded",
+        )
+
+
+class CommsPresentation(Presentation[CommsProducts]):
+    """Framework presentation object for constellation and eye views."""
+
+    def present(self, products: CommsProducts, ui: ViewContext) -> None:
+        present(products, ui)

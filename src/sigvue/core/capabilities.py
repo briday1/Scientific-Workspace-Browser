@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Iterable, Literal, Mapping, Protocol, TypeVar, runtime_checkable
+from typing import Callable, Generic, Iterable, Literal, Mapping, TypeVar
 
 
 SourceData_contra = TypeVar("SourceData_contra", contravariant=True)
@@ -144,9 +144,8 @@ class AnnotationRequest:
         object.__setattr__(self, "view_selections", MappingProxyType(dict(self.view_selections)))
 
 
-@runtime_checkable
-class DataAnnotator(Protocol[SourceData_contra, DeliveredData_contra]):
-    """Optional plugin-owned annotation persistence contract."""
+class Annotator(ABC, Generic[SourceData_contra, DeliveredData_contra]):
+    """Framework object for plugin-owned annotation persistence."""
 
     @property
     @abstractmethod
@@ -177,9 +176,8 @@ class ExportRequest:
             raise ValueError("Export requests require a scope and format")
 
 
-@runtime_checkable
-class DataExporter(Protocol[SourceData_contra, DeliveredData_contra]):
-    """Optional plugin-owned serialization contract."""
+class Exporter(ABC, Generic[SourceData_contra, DeliveredData_contra]):
+    """Framework object for plugin-owned serialization."""
 
     @property
     @abstractmethod

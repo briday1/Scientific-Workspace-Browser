@@ -7,7 +7,7 @@ from .page import OpenedItem
 
 
 @runtime_checkable
-class Workspace(Protocol):
+class WorkspaceProtocol(Protocol):
     @property
     def metadata(self) -> WorkspaceMetadata: ...
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 
-from sigvue.core.contracts import Workspace
+from sigvue.core.contracts import WorkspaceProtocol
 from sigvue.core.errors import WorkspaceLoadError
 
 
@@ -18,17 +18,17 @@ class DiscoveryFailure:
     traceback: str | None = None
 
 
-def discover_workspaces(group: str = ENTRY_POINT_GROUP) -> tuple[list[Workspace], list[DiscoveryFailure]]:
+def discover_workspaces(group: str = ENTRY_POINT_GROUP) -> tuple[list[WorkspaceProtocol], list[DiscoveryFailure]]:
     eps = entry_points()
     selected = eps.select(group=group) if hasattr(eps, "select") else eps.get(group, [])
-    loaded: list[Workspace] = []
+    loaded: list[WorkspaceProtocol] = []
     failures: list[DiscoveryFailure] = []
     for ep in selected:
         _load_entrypoint(ep, loaded, failures)
     return loaded, failures
 
 
-def _load_entrypoint(ep: EntryPoint, loaded: list[Workspace], failures: list[DiscoveryFailure]) -> None:
+def _load_entrypoint(ep: EntryPoint, loaded: list[WorkspaceProtocol], failures: list[DiscoveryFailure]) -> None:
     try:
         obj = ep.load()
         workspace = obj() if callable(obj) else obj

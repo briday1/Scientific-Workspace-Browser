@@ -7,11 +7,23 @@ from pathlib import Path
 from matplotlib.figure import Figure
 import plotly.graph_objects as go
 
-from sigvue.plugin import Annotation, AnnotationField, CapabilityChoice, AnalysisWorkspace, DataResource, DiscoveryColumn
+from sigvue.plugin import (
+    Analysis,
+    Annotation,
+    AnnotationField,
+    CapabilityChoice,
+    Annotator,
+    Exporter,
+    DataResource,
+    DiscoveryColumn,
+    Presentation,
+    Source,
+    Workspace,
+)
 from sigvue.web.application import SigvueApp
 
 
-class MemorySource:
+class MemorySource(Source[tuple[float, ...]]):
     def discover(self):
         return [DataResource(
             "recording",
@@ -24,7 +36,7 @@ class MemorySource:
         return resource.source
 
 
-class MemoryAnnotator:
+class MemoryAnnotator(Annotator):
     fields = (
         AnnotationField("comment", "Description / comment", "textarea", required=True),
     )
@@ -49,7 +61,7 @@ class MemoryAnnotator:
         return annotation
 
 
-class MemoryExporter:
+class MemoryExporter(Exporter):
     scopes = (CapabilityChoice("buffer", "Current buffer"), CapabilityChoice("full", "Full file"))
     formats = (CapabilityChoice("json", "JSON"),)
 
@@ -81,17 +93,32 @@ def analyze_matplotlib(data, ui):
         ui.plot(figure, key="signal")
 
 
+class IdentityAnalysis(Analysis):
+    def process(self, data, settings):
+        return identity_process(data, settings)
+
+
+class PlotlyPresentation(Presentation):
+    def present(self, data, ui):
+        analyze_plotly(data, ui)
+
+
+class MatplotlibPresentation(Presentation):
+    def present(self, data, ui):
+        analyze_matplotlib(data, ui)
+
+
 def create_workspace(config=None):
     values = config or {}
-    return AnalysisWorkspace(
+    return Workspace(
         identifier=str(values.get("id", "test-workspace")),
         name=str(values.get("name", "Test Workspace")),
         description="Framework test fixture",
         source=MemorySource(),
         annotator=MemoryAnnotator(),
         exporter=MemoryExporter(),
-        process=identity_process,
-        present=analyze_plotly,
+        analysis=IdentityAnalysis(),
+        presentation=PlotlyPresentation(),
         discovery_columns=(
             DiscoveryColumn("date", "Date", "datetime"),
             DiscoveryColumn("sample_rate", "Sampling rate", "si", unit="sample/s"),
@@ -104,13 +131,13 @@ def create_test_app() -> SigvueApp:
     app = SigvueApp(title="Sigvue")
     app.register_workspace(create_workspace())
     app.register_workspace(
-        AnalysisWorkspace(
+        Workspace(
             identifier="matplotlib-workspace",
             name="Matplotlib Workspace",
             description="Matplotlib export fixture",
             source=MemorySource(),
-            process=identity_process,
-            present=analyze_matplotlib,
+            analysis=IdentityAnalysis(),
+            presentation=MatplotlibPresentation(),
         )
     )
     return app

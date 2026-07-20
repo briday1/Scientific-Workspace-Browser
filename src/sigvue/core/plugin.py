@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
-from typing import Any, Callable, ContextManager, Generic, Iterable, Iterator, Literal, Mapping, Protocol, TypeVar, overload, runtime_checkable
+from typing import Any, Callable, ContextManager, Generic, Iterable, Iterator, Literal, Mapping, Protocol, TypeVar, runtime_checkable
 
 from plotly.colors import get_colorscale
 
@@ -15,8 +15,8 @@ from .capabilities import (
     Annotation,
     AnnotationCapability,
     AnnotationRequest,
-    DataAnnotator,
-    DataExporter,
+    Annotator,
+    Exporter,
     ExportCapability,
 )
 from .layout import LayoutNode, container, control_slot, view_slot
@@ -60,9 +60,6 @@ class DataResource:
     navigation_path: tuple[str, ...] | None = None
 
 
-SourceData_co = TypeVar("SourceData_co", covariant=True)
-SourceData_contra = TypeVar("SourceData_contra", contravariant=True)
-DeliveredData_co = TypeVar("DeliveredData_co", covariant=True)
 SourceData = TypeVar("SourceData")
 DeliveredData = TypeVar("DeliveredData")
 LoadedData = TypeVar("LoadedData")
@@ -70,27 +67,57 @@ SettingsData = TypeVar("SettingsData")
 AnalysisProducts = TypeVar("AnalysisProducts")
 
 
-def _missing_methods(value: object, names: tuple[str, ...]) -> list[str]:
-    return [f"{name}()" for name in names if not callable(getattr(value, name, None))]
-
-
-@runtime_checkable
-class DataSource(Protocol[SourceData_co]):
-    """Typed source contract: discover resources, then open one source value."""
+class Source(ABC, Generic[SourceData]):
+    """Framework-defined source object: discover items, then open one source value."""
 
     @abstractmethod
-    def discover(self) -> Iterable[DataResource]: ...
+    def discover(self) -> Iterable[DataResource]:
+        """Return the resources available to this workspace."""
 
     @abstractmethod
-    def open(self, resource: DataResource) -> SourceData_co: ...
+    def open(self, resource: DataResource) -> SourceData:
+        """Open one discovered resource as a domain value."""
 
 
-@runtime_checkable
-class DataDelivery(Protocol[SourceData_contra, DeliveredData_co]):
-    """Typed delivery contract between source I/O and workspace processing."""
+class Delivery(ABC, Generic[SourceData, DeliveredData]):
+    """Framework-defined preparation object between opened and processing data."""
 
     @abstractmethod
-    def prepare(self, source_data: SourceData_contra, ui: DeliveryContext) -> DeliveredData_co: ...
+    def prepare(self, source_data: SourceData, ui: DeliveryContext) -> DeliveredData:
+        """Select or transform opened data for the current request."""
+
+
+class Analysis(ABC, Generic[DeliveredData, SettingsData, AnalysisProducts]):
+    """Framework object for parameter declaration and domain processing."""
+
+    def configure(
+        self,
+        data: DeliveredData,
+        ui: ParameterContext,
+    ) -> SettingsData | None:
+        """Declare processing parameters, or inherit this default for no settings."""
+        return None
+
+    @property
+    def has_configuration(self) -> bool:
+        """Whether this analysis overrides the optional configuration stage."""
+        return type(self).configure is not Analysis.configure
+
+    @abstractmethod
+    def process(
+        self,
+        data: DeliveredData,
+        settings: SettingsData | None,
+    ) -> AnalysisProducts:
+        """Produce domain analysis products from the delivered data."""
+
+
+class Presentation(ABC, Generic[AnalysisProducts]):
+    """Framework object that declares views and layout for analysis products."""
+
+    @abstractmethod
+    def present(self, products: AnalysisProducts, ui: ViewContext) -> None:
+        """Declare the workspace's display for one set of products."""
 
 
 @runtime_checkable
@@ -345,7 +372,7 @@ class ViewContext(ParameterContext, Protocol):
     ) -> None: ...
 
 
-class DirectorySource(Generic[LoadedData]):
+class DirectorySource(Source[LoadedData], Generic[LoadedData]):
     """Framework-owned discovery for the common directory-of-inputs case."""
 
     def __init__(
@@ -1190,88 +1217,8 @@ class AnalysisContext:
         return tab_nodes[0] if len(tab_nodes) == 1 else container("tabs", tab_nodes)
 
 
-class AnalysisWorkspace:
-    """Run the optional configure -> process -> present workspace lifecycle."""
-
-    @overload
-    def __init__(
-        self,
-        *,
-        identifier: str,
-        name: str,
-        description: str,
-        source: DataSource[SourceData],
-        configure: Callable[[SourceData, ParameterContext], SettingsData],
-        process: Callable[[SourceData, SettingsData], AnalysisProducts],
-        present: Callable[[AnalysisProducts, ViewContext], None],
-        delivery: None = None,
-        annotator: DataAnnotator[SourceData, SourceData] | None = None,
-        exporter: DataExporter[SourceData, SourceData] | None = None,
-        version: str = "0.1.0",
-        category: str | None = None,
-        tags: tuple[str, ...] = (),
-        discovery_columns: tuple[DiscoveryColumn, ...] = (),
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        *,
-        identifier: str,
-        name: str,
-        description: str,
-        source: DataSource[SourceData],
-        process: Callable[[SourceData, None], AnalysisProducts],
-        present: Callable[[AnalysisProducts, ViewContext], None],
-        configure: None = None,
-        delivery: None = None,
-        annotator: DataAnnotator[SourceData, SourceData] | None = None,
-        exporter: DataExporter[SourceData, SourceData] | None = None,
-        version: str = "0.1.0",
-        category: str | None = None,
-        tags: tuple[str, ...] = (),
-        discovery_columns: tuple[DiscoveryColumn, ...] = (),
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        *,
-        identifier: str,
-        name: str,
-        description: str,
-        source: DataSource[SourceData],
-        configure: Callable[[DeliveredData, ParameterContext], SettingsData],
-        process: Callable[[DeliveredData, SettingsData], AnalysisProducts],
-        present: Callable[[AnalysisProducts, ViewContext], None],
-        delivery: DataDelivery[SourceData, DeliveredData],
-        annotator: DataAnnotator[SourceData, DeliveredData] | None = None,
-        exporter: DataExporter[SourceData, DeliveredData] | None = None,
-        version: str = "0.1.0",
-        category: str | None = None,
-        tags: tuple[str, ...] = (),
-        discovery_columns: tuple[DiscoveryColumn, ...] = (),
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        *,
-        identifier: str,
-        name: str,
-        description: str,
-        source: DataSource[SourceData],
-        process: Callable[[DeliveredData, None], AnalysisProducts],
-        present: Callable[[AnalysisProducts, ViewContext], None],
-        delivery: DataDelivery[SourceData, DeliveredData],
-        configure: None = None,
-        annotator: DataAnnotator[SourceData, DeliveredData] | None = None,
-        exporter: DataExporter[SourceData, DeliveredData] | None = None,
-        version: str = "0.1.0",
-        category: str | None = None,
-        tags: tuple[str, ...] = (),
-        discovery_columns: tuple[DiscoveryColumn, ...] = (),
-    ) -> None: ...
+class Workspace:
+    """Run one explicit Source -> Delivery -> Analysis -> Presentation pipeline."""
 
     def __init__(
         self,
@@ -1279,51 +1226,40 @@ class AnalysisWorkspace:
         identifier: str,
         name: str,
         description: str,
-        source: DataSource[Any],
-        process: Callable[[Any, Any], Any],
-        present: Callable[[Any, ViewContext], None],
-        configure: Callable[[Any, ParameterContext], Any] | None = None,
-        delivery: DataDelivery[Any, Any] | None = None,
-        annotator: DataAnnotator[Any, Any] | None = None,
-        exporter: DataExporter[Any, Any] | None = None,
+        source: Source[Any],
+        analysis: Analysis[Any, Any, Any],
+        presentation: Presentation[Any],
+        delivery: Delivery[Any, Any] | None = None,
+        annotator: Annotator[Any, Any] | None = None,
+        exporter: Exporter[Any, Any] | None = None,
         version: str = "0.1.0",
         category: str | None = None,
         tags: tuple[str, ...] = (),
         discovery_columns: tuple[DiscoveryColumn, ...] = (),
     ) -> None:
-        if not isinstance(source, DataSource):
-            missing = _missing_methods(source, ("discover", "open"))
-            detail = f"; missing {', '.join(missing)}" if missing else ""
-            raise TypeError(f"source must implement DataSource.discover() and DataSource.open(resource){detail}")
-        if delivery is not None and not isinstance(delivery, DataDelivery):
-            missing = _missing_methods(delivery, ("prepare",))
-            detail = f"; missing {', '.join(missing)}" if missing else ""
-            raise TypeError(f"delivery must implement DataDelivery.prepare(source_data, ui){detail}")
-        if annotator is not None and not isinstance(annotator, DataAnnotator):
-            missing = _missing_methods(annotator, ("discover", "annotate"))
-            detail = f"; missing {', '.join(missing)}" if missing else ""
-            raise TypeError(f"annotator must implement DataAnnotator{detail}")
+        if not isinstance(source, Source):
+            raise TypeError("source must be a Source object")
+        if delivery is not None and not isinstance(delivery, Delivery):
+            raise TypeError("delivery must be a Delivery object or omitted")
+        if not isinstance(analysis, Analysis):
+            raise TypeError("analysis must be an Analysis object")
+        if not isinstance(presentation, Presentation):
+            raise TypeError("presentation must be a Presentation object")
+        if annotator is not None and not isinstance(annotator, Annotator):
+            raise TypeError("annotator must be an Annotator object or omitted")
         if annotator is not None:
             field_names = [field.name for field in annotator.fields]
             if len(field_names) != len(set(field_names)):
-                raise ValueError("DataAnnotator field names must be unique")
-        if exporter is not None and not isinstance(exporter, DataExporter):
-            missing = _missing_methods(exporter, ("export",))
-            detail = f"; missing {', '.join(missing)}" if missing else ""
-            raise TypeError(f"exporter must implement DataExporter{detail}")
+                raise ValueError("Annotator field names must be unique")
+        if exporter is not None and not isinstance(exporter, Exporter):
+            raise TypeError("exporter must be an Exporter object or omitted")
         if exporter is not None:
             if not exporter.scopes or not exporter.formats:
-                raise ValueError("DataExporter must provide at least one scope and format")
+                raise ValueError("Exporter must provide at least one scope and format")
             for choice_kind, choices in (("scope", exporter.scopes), ("format", exporter.formats)):
                 values = [choice.value for choice in choices]
                 if len(values) != len(set(values)):
-                    raise ValueError(f"DataExporter {choice_kind} values must be unique")
-        if configure is not None and not callable(configure):
-            raise TypeError("configure must be callable as configure(data, ui), or omitted")
-        if not all(callable(callback) for callback in (process, present)):
-            raise TypeError(
-                "Workspace requires callable process(data, settings) and present(products, ui)"
-            )
+                    raise ValueError(f"Exporter {choice_kind} values must be unique")
         if any(not isinstance(column, DiscoveryColumn) for column in discovery_columns):
             raise TypeError("discovery_columns must contain DiscoveryColumn values")
         column_keys = [column.key for column in discovery_columns]
@@ -1332,10 +1268,9 @@ class AnalysisWorkspace:
         self.metadata = WorkspaceMetadata(identifier, name, description, version, category, tags)
         self.discovery_columns = discovery_columns
         self.source = source
-        self.configure = configure
-        self.process = process
-        self.present = present
         self.delivery = delivery
+        self.analysis = analysis
+        self.presentation = presentation
         self.annotator = annotator
         self.exporter = exporter
         self._once_caches: dict[str, dict[tuple[object, ...], object]] = {}
@@ -1407,7 +1342,7 @@ class AnalysisWorkspace:
                 delivery_elapsed = perf_counter() - delivery_started
 
                 configure_started = perf_counter()
-                settings = self.configure(prepared, context) if self.configure is not None else None
+                settings = self.analysis.configure(prepared, context)
                 configure_elapsed = perf_counter() - configure_started
                 compute_controls = tuple(control.name for control in context.controls)
                 lifecycle_names = (
@@ -1430,11 +1365,11 @@ class AnalysisWorkspace:
                 process_started = perf_counter()
                 process_cached = products is not missing
                 if not process_cached:
-                    products = self.process(prepared, settings)
+                    products = self.analysis.process(prepared, settings)
                 process_elapsed = perf_counter() - process_started
 
                 presentation_started = perf_counter()
-                self.present(products, context)
+                self.presentation.present(products, context)
                 presentation_elapsed = perf_counter() - presentation_started
                 if (
                     not process_cached
@@ -1449,7 +1384,7 @@ class AnalysisWorkspace:
                 context.statistics.setdefault("Delivery runtime", f"{delivery_elapsed * 1_000:.1f} ms")
                 context.statistics.setdefault(
                     "Configuration runtime",
-                    f"{configure_elapsed * 1_000:.1f} ms" if self.configure is not None else "not configured",
+                    f"{configure_elapsed * 1_000:.1f} ms" if self.analysis.has_configuration else "not configured",
                 )
                 context.statistics.setdefault(
                     "Process runtime",
