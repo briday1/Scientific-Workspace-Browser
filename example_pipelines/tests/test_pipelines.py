@@ -5,6 +5,7 @@ import unittest
 from example_pipelines.comms.workspace import create_workspace as create_comms_workspace
 from example_pipelines.scripts.generate_comms import generate as generate_comms
 from example_pipelines.scripts.generate_lte import generate as generate_lte
+from example_pipelines.style import ORANGE, TEAL
 from example_pipelines.waterfall.workspace import create_workspace as create_waterfall_workspace
 
 
@@ -19,7 +20,11 @@ class ExamplePipelineTests(unittest.TestCase):
             workspace = create_waterfall_workspace({"data_root": root})
             items = workspace.discover_items()
             self.assertEqual(2, len(items))
-            self.assertEqual({"downlink", "uplink"}, {item.navigation_path[0] for item in items})
+            self.assertEqual({("lte",)}, {item.navigation_path for item in items})
+            self.assertEqual(
+                {"Synthetic LTE-like downlink", "Synthetic LTE-like uplink"},
+                {item.title for item in items},
+            )
 
             opened = workspace.open_item(items[0].identifier)
             self.assertEqual("windowed", opened.page.playback.mode)
@@ -37,7 +42,7 @@ class ExamplePipelineTests(unittest.TestCase):
             self.assertEqual(figure.data[1].z.shape[0] + 1, len(figure.data[1].y))
             self.assertEqual(tuple(figure.layout.yaxis2.range), (figure.data[1].y[0], figure.data[1].y[-1]))
 
-    def test_synthetic_comms_generator_and_static_workspace(self):
+    def test_synthetic_comms_generator_and_windowed_workspace(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "comms"
             generated = generate_comms(root)
@@ -54,8 +59,18 @@ class ExamplePipelineTests(unittest.TestCase):
 
             for item in items:
                 opened = workspace.open_item(item.identifier)
-                self.assertEqual("static", opened.page.playback.mode)
+                self.assertEqual("windowed", opened.page.playback.mode)
+                self.assertEqual("Mean received power (dBFS)", opened.page.playback.overview_label)
+                self.assertGreater(len(opened.page.playback.overview_values), 1)
+                self.assertLess(
+                    opened.page.playback.window_end_seconds - opened.page.playback.window_start_seconds,
+                    opened.page.playback.duration_seconds,
+                )
                 self.assertEqual(["constellation", "eye"], [view.name for view in opened.page.views])
                 figures = [view.callback({}) for view in opened.page.views]
                 self.assertEqual("scattergl", figures[0].data[0].type)
                 self.assertEqual(["scattergl", "scattergl"], [trace.type for trace in figures[1].data])
+                dark_figures = [view.callback({"__theme": "dark"}) for view in opened.page.views]
+                self.assertEqual("#10252d", dark_figures[0].layout.paper_bgcolor)
+                self.assertEqual(TEAL, dark_figures[0].data[0].marker.color)
+                self.assertEqual([TEAL, ORANGE], [trace.line.color for trace in dark_figures[1].data])

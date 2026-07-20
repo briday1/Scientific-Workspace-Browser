@@ -18,8 +18,8 @@ use = "example_pipelines.comms.workspace:create_workspace"
 path = ".."
 id = "synthetic-comms"
 name = "Synthetic Communications"
-description = "Static full-file constellation and eye-diagram analysis for generated QPSK, 16-QAM, and 64-QAM recordings."
+description = "Windowed constellation and eye-diagram analysis for generated QPSK, 16-QAM, and 64-QAM recordings."
 category = "digital communications"
-tags = ["static", "synthetic", "SigMF", "QPSK", "16-QAM", "64-QAM"]
+tags = ["windowed", "synthetic", "SigMF", "QPSK", "16-QAM", "64-QAM"]
 [workspaces.config]
 data_root = "./data/comms"

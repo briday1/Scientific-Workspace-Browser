@@ -803,6 +803,39 @@ class PluginAuthoringTests(unittest.TestCase):
         self.assertEqual(4, len(page.views))
         self.assertEqual(["buttons", "dropdown"], [node.props["selector"] for node in page.layout.children])
 
+    def test_view_switcher_can_combine_multiple_selection_dimensions(self):
+        def analyze(data, ui: AnalysisContext):
+            with ui.tab("Waterfall"):
+                ui.view_switcher(
+                    ("Domain", "Channels"),
+                    {
+                        ("Time", "All"): go.Figure(),
+                        ("Time", "Ch1"): go.Figure(),
+                        ("Frequency", "All"): go.Figure(),
+                        ("Frequency", "Ch1"): go.Figure(),
+                    },
+                    key="waterfall",
+                    selector=("buttons", "dropdown"),
+                )
+
+        workspace = make_workspace(
+            identifier="multi-dimensional-switcher",
+            name="Multi-dimensional switcher",
+            description="Independent local selectors choose one view",
+            source=ExampleSource(),
+            configure=no_parameters,
+            process=identity_process,
+            present=analyze,
+        )
+        page = workspace.open_item("recording").page
+        switcher = page.layout.children[0]
+        self.assertEqual(("Domain", "Channels"), switcher.props["labels"])
+        self.assertEqual(("buttons", "dropdown"), switcher.props["selectors"])
+        self.assertEqual((("Time", "Frequency"), ("All", "Ch1")), switcher.props["options"])
+        self.assertEqual(((0, 0), (0, 1), (1, 0), (1, 1)), switcher.props["coordinates"])
+        self.assertEqual(("waterfall:0", "waterfall:1"), switcher.props["selection_keys"])
+        self.assertEqual(4, len(page.views))
+
     def test_plot_axis_navigation_is_an_explicit_page_contract(self):
         def analyze(data, ui: AnalysisContext):
             with ui.tab("Spectrum"):

@@ -44,11 +44,10 @@ def ofdm_signal(*, seed: int, duration: float, uplink: bool) -> np.ndarray:
 
 
 def write_recording(root: Path, direction: str, center_frequency: float, seed: int) -> tuple[Path, Path]:
-    directory = root / direction
-    directory.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     stem = f"synthetic-lte-{direction}"
-    metadata_path = directory / f"{stem}.sigmf-meta"
-    data_path = directory / f"{stem}.sigmf-data"
+    metadata_path = root / f"{stem}.sigmf-meta"
+    data_path = root / f"{stem}.sigmf-data"
     samples = ofdm_signal(seed=seed, duration=0.12, uplink=direction == "uplink")
     iq = np.column_stack((samples.real, samples.imag))
     np.round(np.clip(iq, -0.999, 0.999) * 32767).astype("<i2").tofile(data_path)
@@ -75,10 +74,24 @@ def write_recording(root: Path, direction: str, center_frequency: float, seed: i
 
 def generate(root: Path) -> tuple[tuple[Path, Path], ...]:
     root.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_direction_folders(root)
     return (
         write_recording(root, "downlink", 806_000_000.0, 20260719),
         write_recording(root, "uplink", 847_000_000.0, 20260720),
     )
+
+
+def _remove_legacy_direction_folders(root: Path) -> None:
+    """Remove only files made by the former direction-subfolder layout."""
+    for direction in ("downlink", "uplink"):
+        directory = root / direction
+        stem = f"synthetic-lte-{direction}"
+        for suffix in (".sigmf-meta", ".sigmf-data"):
+            path = directory / f"{stem}{suffix}"
+            if path.is_file():
+                path.unlink()
+        if directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
 
 
 def main() -> None:

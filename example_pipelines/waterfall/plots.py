@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 
 from sigvue.plugin import Presentation, ViewContext
 
-from ..style import ACCENT, style_figure
+from ..style import TEAL, style_figure
 from .models import WaterfallProducts
 
 
@@ -38,7 +38,7 @@ def present(products: WaterfallProducts, ui: ViewContext) -> None:
     spectrum_style = ui.trace_style(
         "spectrum_style",
         label="Average spectrum",
-        color=ACCENT,
+        color=TEAL,
         width=1.4,
         group="Display",
     )

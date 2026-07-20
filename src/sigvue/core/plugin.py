@@ -361,11 +361,11 @@ class ViewContext(ParameterContext, Protocol):
 
     def view_switcher(
         self,
-        label: str,
-        views: Mapping[str, object | Callable[[], object]],
+        label: str | tuple[str, ...],
+        views: Mapping[str | tuple[str, ...], object | Callable[[], object]],
         *,
         key: str,
-        selector: str = "buttons",
+        selector: str | tuple[str, ...] = "buttons",
         update: str | None = None,
         depends_on: Iterable[str] = (),
         axis_navigation: AxisNavigation = "free",
@@ -1145,11 +1145,11 @@ class AnalysisContext:
 
     def view_switcher(
         self,
-        label: str,
-        views: Mapping[str, object | Callable[[], object]],
+        label: str | tuple[str, ...],
+        views: Mapping[str | tuple[str, ...], object | Callable[[], object]],
         *,
         key: str,
-        selector: str = "buttons",
+        selector: str | tuple[str, ...] = "buttons",
         update: str | None = None,
         depends_on: Iterable[str] = (),
         axis_navigation: AxisNavigation = "free",
@@ -1157,28 +1157,62 @@ class AnalysisContext:
         """Add locally switchable views without creating tabs or analysis controls."""
         if self._active_tab is None:
             raise RuntimeError("ui.view_switcher() must be used inside ui.tab()")
-        if selector not in {"buttons", "dropdown"}:
-            raise ValueError("selector must be 'buttons' or 'dropdown'")
         if key in self._switcher_keys:
             raise ValueError(f"Duplicate view-switcher key: {key}")
         if not views:
             raise ValueError("View switchers require at least one view")
+        labels = (label,) if isinstance(label, str) else tuple(label)
+        selectors = (selector,) if isinstance(selector, str) else tuple(selector)
+        if not labels:
+            raise ValueError("View switchers require at least one selection dimension")
+        if len(selectors) != len(labels) or any(choice not in {"buttons", "dropdown"} for choice in selectors):
+            raise ValueError("selector must provide 'buttons' or 'dropdown' for every selection dimension")
+        coordinates = []
+        options: list[list[str]] = [[] for _ in labels]
+        normalized_views = []
+        for view_label, figure in views.items():
+            coordinate = (view_label,) if isinstance(view_label, str) else tuple(view_label)
+            if len(coordinate) != len(labels):
+                raise ValueError("Every view key must provide one choice per selection dimension")
+            text_coordinate = tuple(str(choice) for choice in coordinate)
+            indexes = []
+            for dimension, choice in enumerate(text_coordinate):
+                if choice not in options[dimension]:
+                    options[dimension].append(choice)
+                indexes.append(options[dimension].index(choice))
+            coordinates.append(tuple(indexes))
+            normalized_views.append((text_coordinate, figure))
         policy = update or self._active_tab.update
         self._validate_update(policy)
         self._validate_axis_navigation(axis_navigation)
         self._switcher_keys.add(key)
         slots = []
-        for index, (view_label, figure) in enumerate(views.items()):
+        for index, (view_label, figure) in enumerate(normalized_views):
             view_key = f"{key}-{index}"
             if view_key in self.figures:
                 raise ValueError(f"Duplicate view-switcher key: {view_key}")
             self.figures[view_key] = self._resolve_figure(view_key, figure, policy, depends_on)
             self.figure_updates[view_key] = policy
             self.figure_axis_navigation[view_key] = axis_navigation
-            slots.append(view_slot(view_key, label=view_label))
+            slots.append(view_slot(view_key, label=" / ".join(view_label)))
         if self._active_nodes is None:
             raise RuntimeError("ui.view_switcher() must be used inside ui.tab()")
-        self._active_nodes.append(container("view_switcher", slots, label=label, key=key, selector=selector))
+        self._active_nodes.append(
+            container(
+                "view_switcher",
+                slots,
+                label=labels[0],
+                key=key,
+                selector=selectors[0],
+                labels=labels,
+                selectors=selectors,
+                options=tuple(tuple(values) for values in options),
+                coordinates=tuple(coordinates),
+                selection_keys=(key,)
+                if len(labels) == 1
+                else tuple(f"{key}:{dimension}" for dimension in range(len(labels))),
+            )
+        )
 
     @staticmethod
     def _validate_update(update: str) -> None:

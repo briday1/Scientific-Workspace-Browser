@@ -5,8 +5,8 @@ This directory is deliberately outside `src/sigvue`: it is plugin code, not fram
 ```text
 example_pipelines/
 ├── io/sigmf/          shared file-format I/O
-├── style/            shared Plotly appearance
-├── comms/            static constellation and eye-diagram pipeline
+├── style/             shared teal/orange Plotly appearance
+├── comms/             windowed constellation and eye-diagram pipeline
 ├── waterfall/
 │   ├── source.py       discovery and loader binding
 │   ├── delivery.py     window-selection and ranged reads
@@ -25,11 +25,57 @@ python example_pipelines/scripts/generate_comms.py
 sigvue --config example_pipelines/browser.toml
 ```
 
-Open <http://127.0.0.1:8000>. Generated data stays untracked under `example_pipelines/data/lte/`.
+Open <http://127.0.0.1:8000>. Generated data stays untracked. The LTE
+uplink and downlink pairs are written together under `example_pipelines/data/lte/`;
+the modulation recordings are written under `example_pipelines/data/comms/`.
+
+## The current plugin contract
+
+`create_workspace()` assembles framework-defined objects; it does not perform
+the analysis itself. `Source`, `Analysis`, and `Presentation` are required.
+`Delivery` is optional: omit it for a complete-file analysis, or provide it when
+the framework should expose seek, live, windowed, or segmented data selection.
+
+```mermaid
+flowchart LR
+    Config["browser.toml config"] --> Factory["create_workspace(config)"]
+    Factory --> Workspace
+    Workspace --> Source["Source · discover and open"]
+    Workspace -. optional .-> Delivery["Delivery · choose requested data"]
+    Workspace --> Analysis["Analysis · configure and process"]
+    Workspace --> Presentation["Presentation · controls, views, and layout"]
+
+    Source --> Opened["opened file object"]
+    Opened --> Delivery
+    Delivery --> Selected["selected window"]
+    Opened -. no Delivery .-> Input["analysis input"]
+    Selected --> Input
+    Input --> Analysis
+    Analysis --> Products["typed analysis products"]
+    Products --> Presentation
+    Presentation --> Page["Sigvue page"]
+```
+
+Each pipeline therefore reads like a small processing program:
+
+```python
+return Workspace(
+    source=recording_source(root),
+    delivery=WindowedSamples(),       # optional
+    analysis=WaterfallAnalysis(),     # process selected data
+    presentation=WaterfallPresentation(),  # display products
+    identifier="synthetic-lte-waterfall",
+    name="Synthetic LTE Waterfall",
+)
+```
+
+The framework creates and passes `DeliveryContext`, `ParameterContext`, and
+`ViewContext`. Plugin authors use those contexts to declare behavior and UI;
+they do not construct or return framework page internals.
 
 ## What the waterfall example demonstrates
 
-The workspace assembly contains only framework objects. Each object owns one
+The workspace assembly contains only framework contract objects. Each object owns one
 kind of behavior and declares controls only through the request-scoped API it
 receives:
 
@@ -40,10 +86,10 @@ receives:
 | `WaterfallAnalysis()` | `Analysis` | `ParameterContext.select()` for FFT size and overlap, followed by ordinary NumPy processing. |
 | `WaterfallPresentation()` | `Presentation` | Tabs, Plotly rendering, colormap, paired limits, toggle, trace-style picker, statistics, theme, and bounded axes through `ViewContext`. |
 
-The communications example is deliberately smaller: `DirectorySource`, a
-static `CommsAnalysis`, and a `CommsPresentation` with constellation and eye
-tabs. It shows what can be omitted when no delivery, processing parameters,
-annotations, or export behavior is needed.
+The communications example stays compact while adding `WindowedCommsDelivery`
+for a draggable received-power overview. `CommsAnalysis` processes only that
+selected interval, and `CommsPresentation` provides constellation and eye tabs.
+It still omits processing parameters, annotations, and export behavior.
 
 ## Test
 

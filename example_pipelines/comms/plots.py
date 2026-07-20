@@ -5,11 +5,8 @@ import plotly.graph_objects as go
 
 from sigvue.plugin import Presentation, ViewContext
 
-from ..style import ACCENT, style_figure
+from ..style import ORANGE, TEAL, style_figure
 from .models import CommsProducts
-
-
-QUADRATURE = "#ff8a4c"
 
 
 def present(products: CommsProducts, ui: ViewContext) -> None:
@@ -17,7 +14,7 @@ def present(products: CommsProducts, ui: ViewContext) -> None:
         x=products.symbols.real,
         y=products.symbols.imag,
         mode="markers",
-        marker={"color": ACCENT, "size": 6, "opacity": 0.55},
+        marker={"color": TEAL, "size": 6, "opacity": 0.58},
         name=products.modulation,
     ))
     constellation.update_xaxes(
@@ -41,8 +38,8 @@ def present(products: CommsProducts, ui: ViewContext) -> None:
             separators,
         ), axis=1).reshape(-1)
         for label, values, color in (
-            ("I", products.eye_segments.real, ACCENT),
-            ("Q", products.eye_segments.imag, QUADRATURE),
+            ("I", products.eye_segments.real, TEAL),
+            ("Q", products.eye_segments.imag, ORANGE),
         ):
             eye_y = np.concatenate((values, separators), axis=1).reshape(-1)
             eye.add_trace(go.Scattergl(
@@ -63,6 +60,8 @@ def present(products: CommsProducts, ui: ViewContext) -> None:
     ui.stat("Modulation", products.modulation)
     ui.stat("Samples per symbol", products.samples_per_symbol)
     ui.stat("Recovered symbols", products.symbols.size)
+    ui.stat("Window start", f"{products.start_seconds * 1e3:.3f} ms")
+    ui.stat("Window width", f"{products.duration_seconds * 1e3:.3f} ms")
     with ui.tab("Constellation"):
         ui.plot(
             style_figure(constellation, ui.theme, f"{products.modulation} constellation"),
