@@ -27,7 +27,7 @@ import shutil
 import sys
 from tempfile import mkdtemp
 import time
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -370,6 +370,7 @@ class SigvueApp:
     _batch_lock: RLock = field(default_factory=RLock, init=False, repr=False)
     _batch_jobs: dict[str, BatchJob] = field(default_factory=dict, init=False, repr=False)
     _batch_latest: dict[tuple[str, str | None, str], str] = field(default_factory=dict, init=False, repr=False)
+    _batch_declared_files: dict[tuple[str, str], Path] = field(default_factory=dict, init=False, repr=False)
     _batch_executor: ThreadPoolExecutor = field(
         default_factory=lambda: ThreadPoolExecutor(max_workers=4, thread_name_prefix="workspace-batch"),
         init=False,
@@ -594,21 +595,23 @@ class SigvueApp:
             raise TypeError("Batch destination hooks must return BatchDestination")
         return destination
 
-    @staticmethod
-    def _batch_files(job_id: str | None, directory: Path, names: tuple[str, ...] | list[str]) -> list[dict[str, object]]:
-        return [
-            {
+    def _batch_files(self, job_id: str | None, directory: Path, names: tuple[str, ...] | list[str]) -> list[dict[str, object]]:
+        files = []
+        for name in names:
+            path = (directory / name).resolve()
+            if job_id:
+                url = f"/batches/{job_id}/{name}"
+            else:
+                token = uuid5(NAMESPACE_URL, str(path)).hex
+                self._batch_declared_files[(token, name)] = path
+                url = f"/batch-files/{token}/{name}"
+            files.append({
                 "name": name,
-                "path": str((directory / name).resolve()),
-                "url": f"/batches/{job_id}/{name}" if job_id else None,
-                "open_url": (
-                    f"/batches/{job_id}/{name}"
-                    if job_id and Path(name).suffix.lower() in {".html", ".htm"}
-                    else (Path(directory / name).resolve().as_uri() if Path(name).suffix.lower() in {".html", ".htm"} else None)
-                ),
-            }
-            for name in names
-        ]
+                "path": str(path),
+                "url": url,
+                "open_url": url if path.suffix.lower() in {".html", ".htm"} else None,
+            })
+        return files
 
     def _declared_batch_status(self, workspace: Any, action: str, item_id: str | None) -> dict[str, object]:
         destination = self._batch_destination(workspace, action, item_id)
@@ -714,6 +717,13 @@ class SigvueApp:
         if filename not in allowed:
             raise KeyError(filename)
         return job.directory / filename
+
+    def declared_batch_file(self, token: str, filename: str) -> Path:
+        with self._batch_lock:
+            target = self._batch_declared_files.get((token, filename))
+        if target is None or not target.is_file():
+            raise KeyError(filename)
+        return target
 
     def open_item(self, workspace_id: str, item_id: str, control_values: dict[str, object] | None = None) -> dict[str, Any]:
         request_started = time.perf_counter()
@@ -1122,6 +1132,13 @@ def _make_handler(app: SigvueApp) -> type[BaseHTTPRequestHandler]:
                     return
                 if len(parts) == 3 and parts[0] == "batches":
                     batch_path = app.batch_file(parts[1], parts[2])
+                    self._write_export_file(
+                        batch_path,
+                        inline=batch_path.suffix.lower() in {".html", ".htm"},
+                    )
+                    return
+                if len(parts) == 3 and parts[0] == "batch-files":
+                    batch_path = app.declared_batch_file(parts[1], parts[2])
                     self._write_export_file(
                         batch_path,
                         inline=batch_path.suffix.lower() in {".html", ".htm"},

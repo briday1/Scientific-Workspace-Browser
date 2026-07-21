@@ -564,6 +564,9 @@ class WebAppTests(unittest.TestCase):
             action = relaunched.browse_items("durable-workspace", {})["items"][0]["batch"]["actions"][0]
             self.assertEqual("ready", action["status"])
             self.assertEqual(str(expected.resolve()), action["files"][0]["path"])
+            self.assertTrue(action["files"][0]["open_url"].startswith("/batch-files/"))
+            _, _, token, filename = action["files"][0]["open_url"].split("/")
+            self.assertEqual(expected.resolve(), relaunched.declared_batch_file(token, filename))
 
     def test_export_endpoint_routes_plugin_scope_and_format(self):
         app = Mock()
