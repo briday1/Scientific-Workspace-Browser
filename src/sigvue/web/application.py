@@ -118,7 +118,7 @@ history.pushState=(state,title,path)=>{routeIndex+=1;routeMaximum=routeIndex;ses
 function pushRoute(path){history.pushState(null,'',path)}
 headerBack.onclick=()=>history.back();
 headerForward.onclick=()=>history.forward();
-headerRefresh.onclick=()=>location.reload();
+headerRefresh.onclick=async()=>{headerRefresh.disabled=true;try{await boot(true)}finally{headerRefresh.disabled=false}};
 const fail=e=>app.innerHTML=`<div class="error"><b>Unable to load this page</b><br>${esc(e.message)}</div>`;
 let playbackTimer=null,playbackPosition=0,playbackPaused=false,playbackFollowLive=false,windowStart=0,windowEnd=null,segmentId=null,plotResizeObserver=null,windowOverviewResizeObserver=null,redrawWindowOverview=null,dataStageResizeFrame=null,annotations=[],annotationTimelineColorControl=null,activePlaybackSeek=null,activeAnnotationSeek=null;
 new MutationObserver(()=>{if(document.body.classList.contains('hold-item-layout'))requestAnimationFrame(()=>document.body.classList.remove('hold-item-layout'))}).observe(app,{childList:true});
@@ -272,7 +272,7 @@ async function openItem(wid,wname,iid,navigate=true,controlValues={},preservePla
     const settingsChanged=async()=>{if(isPlayback)clearInterval(playbackTimer);const applied=await refresh(true);if(isPlayback&&applied)startFrameworkPlayback(p.playback,refresh);else if(isWindowed&&applied)startFrameworkWindowed(p.playback,refresh);else if(isSegmented&&applied)startFrameworkSegmented(p.playback,refresh)};
     if(isPlayback)startFrameworkPlayback(p.playback,refresh);else if(isWindowed)startFrameworkWindowed(p.playback,refresh);else if(isSegmented)startFrameworkSegmented(p.playback,refresh);else if(p.refresh.enabled)startFrameworkRefresh(p.refresh,refresh);document.querySelectorAll('[data-control]').forEach(x=>{x.onchange=settingsChanged;if(x.type==='color')x.oninput=()=>{const swatch=x.closest('[data-style-picker]')?.querySelector('[data-style-swatch]');if(swatch)swatch.style.background=x.value;updateAnnotationMarkerColor()}});document.querySelector('#home').onclick=()=>catalog();document.querySelector('#back').onclick=()=>items(wid,wname,true,data.item.navigation_path||[])
   }catch(e){fail(e)}}
-async function boot(){const parts=location.pathname.split('/').filter(Boolean).map(decodeURIComponent);if(parts[0]!=='workspace')return catalog(false);try{const {workspaces}=await api('/workspaces'),workspace=workspaces.find(w=>w.id===parts[1]);if(!workspace)return catalog(false);if(parts[2]==='item'&&parts[3])return openItem(workspace.id,workspace.name,parts[3],false);if(parts[2]==='browse')return items(workspace.id,workspace.name,false,parts.slice(3));return items(workspace.id,workspace.name,false)}catch(e){fail(e)}}
+async function boot(reload=false){const parts=location.pathname.split('/').filter(Boolean).map(decodeURIComponent),workspaceUrl=reload?'/workspaces?reload=1':'/workspaces';if(parts[0]!=='workspace'){if(reload)await api(workspaceUrl);return catalog(false)}try{const {workspaces}=await api(workspaceUrl),workspace=workspaces.find(w=>w.id===parts[1]);if(!workspace)return catalog(false);if(parts[2]==='item'&&parts[3])return openItem(workspace.id,workspace.name,parts[3],false);if(parts[2]==='browse')return items(workspace.id,workspace.name,false,parts.slice(3));return items(workspace.id,workspace.name,false)}catch(e){fail(e)}}
 appHome.onclick=()=>catalog();
 window.onpopstate=event=>{routeIndex=Number(event.state?.sigvueIndex??0);syncHeaderNavigation();boot()};syncHeaderNavigation();boot();
 </script></body></html>"""
@@ -1034,6 +1034,8 @@ def _make_handler(app: SigvueApp) -> type[BaseHTTPRequestHandler]:
                 return
             if parsed.path == "/workspaces":
                 try:
+                    if parse_qs(parsed.query).get("reload") == ["1"] and app.config_path is not None:
+                        app.reload_browser_profile()
                     app.reload_workspace_modules()
                     self._write_json(200, {
                         "workspaces": app.list_workspaces(),

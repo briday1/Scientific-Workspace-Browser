@@ -196,7 +196,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("fullscreenchange", body)
         self.assertIn("headerBack.onclick=()=>history.back()", body)
         self.assertIn("headerForward.onclick=()=>history.forward()", body)
-        self.assertIn("headerRefresh.onclick=()=>location.reload()", body)
+        self.assertIn("headerRefresh.onclick=async()=>", body)
+        self.assertIn("await boot(true)", body)
+        self.assertNotIn("location.reload()", body)
         self.assertIn("if(navigate)pushRoute", body)
         self.assertIn("catalog()", body)
         self.assertIn('id="workspace-search"', body)
@@ -628,6 +630,21 @@ class WebAppTests(unittest.TestCase):
 
         app.reload_browser_profile.assert_called_once_with()
         handler._write_html.assert_called_once()
+
+    def test_soft_refresh_reloads_browser_profile_without_document_navigation(self):
+        app = Mock()
+        app.config_path = Path("browser.toml")
+        app.list_workspaces.return_value = []
+        handler_type = _make_handler(app)
+        handler = handler_type.__new__(handler_type)
+        handler.path = "/workspaces?reload=1"
+        handler._write_json = Mock()
+
+        handler.do_GET()
+
+        app.reload_browser_profile.assert_called_once_with()
+        app.reload_workspace_modules.assert_called_once_with()
+        handler._write_json.assert_called_once()
 
 
 if __name__ == "__main__":
