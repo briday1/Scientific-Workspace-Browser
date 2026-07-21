@@ -214,6 +214,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Batch complete", body)
         self.assertIn('id="header-notifications"', body)
         self.assertIn('id="notification-list"', body)
+        self.assertIn("#notification-list { max-height:min(330px", body)
+        self.assertIn("overflow-y:auto; overscroll-behavior:contain", body)
         self.assertIn("notifications.unshift", body)
         self.assertIn("data-dismiss-notification", body)
         self.assertNotIn("data-batch-result", body)
