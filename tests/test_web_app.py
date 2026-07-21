@@ -567,6 +567,8 @@ class WebAppTests(unittest.TestCase):
             self.assertTrue(action["files"][0]["open_url"].startswith("/batch-files/"))
             _, _, token, filename = action["files"][0]["open_url"].split("/")
             self.assertEqual(expected.resolve(), relaunched.declared_batch_file(token, filename))
+            encoded = relaunched._batch_files(None, output_path, ("report #1.html",))[0]
+            self.assertIn("report%20%231.html", encoded["open_url"])
 
     def test_export_endpoint_routes_plugin_scope_and_format(self):
         app = Mock()

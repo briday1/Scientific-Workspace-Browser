@@ -1,9 +1,26 @@
 import unittest
+from pathlib import Path
 
-from sigvue.plugin import Annotation, AnnotationField, AnnotationPlotBinding, AnnotationRequest
+from sigvue.plugin import (
+    Annotation,
+    AnnotationField,
+    AnnotationPlotBinding,
+    AnnotationRequest,
+    BatchDestination,
+)
 
 
 class CapabilityTests(unittest.TestCase):
+    def test_batch_destination_requires_safe_durable_filenames(self):
+        destination = BatchDestination(Path("reports"), ("report 1.html",), "Ready")
+        self.assertEqual(("report 1.html",), destination.files)
+        with self.assertRaisesRegex(ValueError, "cannot declare durable files"):
+            BatchDestination(files=("report.html",))
+        with self.assertRaisesRegex(ValueError, "plain filenames"):
+            BatchDestination(Path("reports"), ("nested/report.html",))
+        with self.assertRaisesRegex(ValueError, "plain filenames"):
+            BatchDestination(Path("reports"), ("report\nInjected: header.html",))
+
     def test_plot_bound_number_field_validates_and_retains_transform(self):
         binding = AnnotationPlotBinding("waterfall", "xaxis2", "lower", scale=1e6)
         field = AnnotationField("frequency_lower_hz", "Lower frequency", "number", plot_binding=binding)

@@ -874,10 +874,10 @@ how its domain data is serialized.
 
 Batch is a separate workspace-level capability for work that should start from the
 catalog rather than an open data view. A `Batch` advertises any combination of item
-actions and workspace actions. Sigvue renders the action launcher at the left edge of
+actions and workspace actions. Sigvue renders the action launcher at the right edge of
 workspace cards and discovered-item rows, runs jobs on a dedicated background thread
-pool, and retains pending, running, successful, or failed status while the application
-is running. Successful jobs may expose one or more downloadable artifacts.
+pool, and reports pending, running, successful, or failed status. Successful jobs may
+expose one or more local artifacts.
 
 ```python
 from pathlib import Path
@@ -900,7 +900,7 @@ class Reports(Batch[Recording]):
         return BatchResult((report,), "Report generated")
 
     def run_workspace(self, resources, open_resource, request, directory):
-        archive = compile_reports(resources, open_resource, directory)
+        archive = compile_reports(resources, open_resource, directory / "workspace.zip")
         return BatchResult((archive,), "Workspace report generated")
 
 workspace = Workspace(..., batch=Reports())

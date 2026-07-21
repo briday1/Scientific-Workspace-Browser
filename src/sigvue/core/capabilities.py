@@ -227,7 +227,10 @@ class BatchDestination:
     def __post_init__(self) -> None:
         if self.directory is None and self.files:
             raise ValueError("Temporary batch destinations cannot declare durable files")
-        if any(not name or Path(name).name != name for name in self.files):
+        if any(
+            not name or Path(name).name != name or any(character in name for character in "\r\n\0")
+            for name in self.files
+        ):
             raise ValueError("Batch destination files must be plain filenames")
 
 

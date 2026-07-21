@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import RLock
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from plotly.offline import get_plotlyjs
 
@@ -258,7 +258,8 @@ const batchStatusGlyph=action=>({running:'●',pending:'●',ready:'✓',error:'
 const batchLauncherHtml=action=>`<span class="batch-play" aria-hidden="true">▶</span>`;
 function batchArtifactHtml(file){return `<div class="batch-artifact"><span class="batch-path" title="${esc(file.path)}">${esc(file.path)}</span>${file.open_url?`<a class="batch-open" href="${esc(file.open_url)}" target="_blank" rel="noopener">Open</a>`:''}<button class="copy-path" type="button" data-copy-path="${esc(file.path)}">Copy path</button></div>`}
 function batchMenuHtml(batch,url){if(!batch?.enabled)return '';const summary=batch.actions.find(action=>['running','pending'].includes(batchState(action)))||batch.actions.find(action=>batchState(action)==='ready')||batch.actions.find(action=>batchState(action)==='error')||batch.actions[0];return `<details class="batch-menu ${esc(batchState(summary))}" data-batch-menu data-batch-url="${esc(url)}"><summary title="Run batch action" aria-label="Run batch action">${batchLauncherHtml(summary)}</summary><div class="batch-menu-popover">${batch.actions.map(action=>`<div class="batch-action-row"><button class="batch-action" type="button" data-batch-action="${esc(action.value)}"><span>${esc(action.label)}</span><span class="batch-state ${esc(batchState(action))}">${batchStatusGlyph(action)} ${esc(batchState(action))}</span></button>${action.files?.length?`<div class="batch-artifacts">${action.files.map(batchArtifactHtml).join('')}</div>`:''}</div>`).join('')}</div></details>`}
-function bindCopyPaths(root=document){root.querySelectorAll('[data-copy-path]').forEach(button=>button.onclick=async event=>{event.preventDefault();event.stopPropagation();await navigator.clipboard.writeText(button.dataset.copyPath);const label=button.textContent;button.textContent='Copied';setTimeout(()=>button.textContent=label,1200)})}
+async function copyText(value){if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(value);return}const input=document.createElement('textarea');input.value=value;input.style.position='fixed';input.style.opacity='0';document.body.append(input);input.select();const copied=document.execCommand('copy');input.remove();if(!copied)throw new Error('Clipboard access is unavailable')}
+function bindCopyPaths(root=document){root.querySelectorAll('[data-copy-path]').forEach(button=>button.onclick=async event=>{event.preventDefault();event.stopPropagation();const label=button.textContent;try{await copyText(button.dataset.copyPath);button.textContent='Copied'}catch(error){button.textContent='Copy failed'}finally{setTimeout(()=>button.textContent=label,1200)}})}
 const notifications=[];
 function renderNotifications(){notificationBadge.hidden=!notifications.length;notificationBadge.textContent=String(notifications.length);notificationList.innerHTML=notifications.length?notifications.map(notification=>`<article class="notification-item" data-notification="${esc(notification.notificationId)}"><div class="notification-title"><span class="notification-status ${esc(notification.status)}">${esc(notification.status)}</span><strong>${notification.status==='ready'?'Batch complete':'Batch failed'}</strong><button class="notification-dismiss" type="button" data-dismiss-notification="${esc(notification.notificationId)}" aria-label="Dismiss">×</button></div><p class="notification-summary">${esc(notification.summary||notification.detail||'')}</p>${notification.files?.length?`<div class="notification-files">${notification.files.map(batchArtifactHtml).join('')}</div>`:''}</article>`).join(''):'<p class="notification-empty">No notifications yet.</p>';bindCopyPaths(notificationList);notificationList.querySelectorAll('[data-dismiss-notification]').forEach(button=>button.onclick=event=>{event.preventDefault();event.stopPropagation();const index=notifications.findIndex(item=>item.notificationId===button.dataset.dismissNotification);if(index>=0)notifications.splice(index,1);renderNotifications()})}
 function showBatchResult(status){notifications.unshift({...status,notificationId:`${Date.now()}-${Math.random()}`});renderNotifications();const toast=document.createElement('div');toast.className=`notification-toast ${status.status==='error'?'error':''}`;toast.innerHTML=`<strong>${status.status==='ready'?'Batch complete':'Batch failed'}</strong><span>${esc(status.summary||status.detail||'')}</span>`;notificationToasts.append(toast);setTimeout(()=>toast.remove(),3000)}
@@ -599,12 +600,14 @@ class SigvueApp:
         files = []
         for name in names:
             path = (directory / name).resolve()
+            encoded_name = quote(name, safe="")
             if job_id:
-                url = f"/batches/{job_id}/{name}"
+                url = f"/batches/{job_id}/{encoded_name}"
             else:
                 token = uuid5(NAMESPACE_URL, str(path)).hex
-                self._batch_declared_files[(token, name)] = path
-                url = f"/batch-files/{token}/{name}"
+                with self._batch_lock:
+                    self._batch_declared_files[(token, name)] = path
+                url = f"/batch-files/{token}/{encoded_name}"
             files.append({
                 "name": name,
                 "path": str(path),
@@ -665,6 +668,8 @@ class SigvueApp:
                 target = Path(value).resolve()
                 if target.parent != resolved_directory or not target.is_file():
                     raise ValueError("Batch results must contain files created in their destination directory")
+                if any(character in target.name for character in "\r\n\0"):
+                    raise ValueError("Batch result filenames cannot contain control characters")
                 files.append(target.name)
             missing_declared = [name for name in destination.files if name not in files]
             if missing_declared:
@@ -1085,7 +1090,12 @@ def _make_handler(app: SigvueApp) -> type[BaseHTTPRequestHandler]:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             disposition = "inline" if inline else "attachment"
-            self.send_header("Content-Disposition", f'{disposition}; filename="{path.name}"')
+            self.send_header(
+                "Content-Disposition",
+                f"{disposition}; filename*=UTF-8''{quote(path.name, safe='')}",
+            )
+            if inline:
+                self.send_header("Content-Security-Policy", "sandbox allow-scripts")
             self.send_header("Content-Length", str(path.stat().st_size))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
