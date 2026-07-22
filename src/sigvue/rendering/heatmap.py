@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import warnings
-from dataclasses import dataclass
 from io import BytesIO
 from math import ceil
 from typing import Any, Literal
@@ -105,134 +104,6 @@ def _coordinate_bounds(values: Any, cell_count: int) -> tuple[float, float]:
     return float(coordinates[0] - spacing[0] / 2), float(coordinates[-1] + spacing[-1] / 2)
 
 
-@dataclass(frozen=True)
-class RasterizedHeatmap:
-    """Wrap a Plotly Heatmap and render its matrix as one bounded PNG image."""
-
-    trace: go.Heatmap
-    render_width: int = 1024
-    render_height: int = 512
-    aggregation: HeatmapAggregation = "mean"
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.trace, go.Heatmap):
-            raise TypeError("RasterizedHeatmap requires a plotly.graph_objects.Heatmap")
-        if self.render_width <= 0 or self.render_height <= 0:
-            raise ValueError("Heatmap render width and height must be positive")
-        if self.aggregation not in HEATMAP_AGGREGATIONS:
-            raise ValueError(f"Unsupported heatmap aggregation: {self.aggregation}")
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        render_width: int = 1024,
-        render_height: int = 512,
-        aggregation: HeatmapAggregation = "mean",
-        **heatmap: Any,
-    ) -> "RasterizedHeatmap":
-        """Construct a wrapped Heatmap from normal Plotly keyword arguments."""
-        return cls(go.Heatmap(**heatmap), render_width, render_height, aggregation)
-
-    @property
-    def render_shape(self) -> tuple[int, int]:
-        rows, columns = np.asarray(self.trace.z).shape
-        row_block = max(1, ceil(rows / self.render_height))
-        column_block = max(1, ceil(columns / self.render_width))
-        return ceil(rows / row_block), ceil(columns / column_block)
-
-    def add_to(self, figure: go.Figure, *, row: int | None = None, col: int | None = None) -> int:
-        """Add the raster and its lightweight colorbar carrier to ``figure``."""
-        trace = go.Heatmap(self.trace)
-        original = np.asarray(trace.z)
-        rendered = aggregate_heatmap(
-            original,
-            width=self.render_width,
-            height=self.render_height,
-            method=self.aggregation,
-        )
-        finite = original[np.isfinite(original)]
-        if finite.size == 0:
-            raise ValueError("Heatmap values must contain at least one finite value")
-        zmin = float(trace.zmin) if trace.zmin is not None else float(np.min(finite))
-        zmax = float(trace.zmax) if trace.zmax is not None else float(np.max(finite))
-        if zmax <= zmin:
-            zmax = zmin + max(1.0, abs(zmin) * 1e-9)
-        x_bounds = _coordinate_bounds(trace.x, original.shape[1])
-        y_bounds = _coordinate_bounds(trace.y, original.shape[0])
-        if row is None and col is None:
-            figure.add_trace(trace)
-        elif row is not None and col is not None:
-            figure.add_trace(trace, row=row, col=col)
-        else:
-            raise ValueError("Heatmap subplot row and col must be supplied together")
-        trace_index = len(figure.data) - 1
-        attached = figure.data[trace_index]
-        xref = attached.xaxis or "x"
-        yref = attached.yaxis or "y"
-        xmin, xmax = x_bounds
-        ymin, ymax = y_bounds
-        figure.add_layout_image(
-            source=_png_uri(rendered, zmin=zmin, zmax=zmax, colorscale=trace.colorscale),
-            name=trace.name,
-            xref=xref,
-            yref=yref,
-            x=xmin,
-            y=ymax,
-            sizex=xmax - xmin,
-            sizey=ymax - ymin,
-            xanchor="left",
-            yanchor="top",
-            sizing="stretch",
-            opacity=1.0,
-            layer="below",
-            visible=trace.visible is not False and trace.visible != "legendonly",
-        )
-        rasters = getattr(figure, "_sigvue_rasterized_heatmaps", None)
-        if rasters is None:
-            rasters = []
-            figure._sigvue_rasterized_heatmaps = rasters
-        rasters.append(
-            _RasterSpec(
-                image_index=len(figure.layout.images) - 1,
-                xref=xref,
-                yref=yref,
-                x=np.asarray(trace.x, dtype=float) if trace.x is not None else None,
-                y=np.asarray(trace.y, dtype=float) if trace.y is not None else None,
-                z=original,
-                zmin=zmin,
-                zmax=zmax,
-                colorscale=trace.colorscale,
-                render_width=self.render_width,
-                render_height=self.render_height,
-                aggregation=self.aggregation,
-            )
-        )
-        attached.x = [xmin, xmax]
-        attached.y = [ymin, ymax]
-        attached.z = [[zmin, zmax], [zmin, zmax]]
-        attached.opacity = 0.0
-        attached.hoverinfo = "skip"
-        attached.hovertemplate = None
-        return trace_index
-
-
-@dataclass(frozen=True)
-class _RasterSpec:
-    image_index: int
-    xref: str
-    yref: str
-    x: np.ndarray | None
-    y: np.ndarray | None
-    z: np.ndarray
-    zmin: float
-    zmax: float
-    colorscale: Any
-    render_width: int
-    render_height: int
-    aggregation: HeatmapAggregation
-
-
 def _axis_name(reference: str) -> str:
     return f"{reference[0]}axis{reference[1:]}"
 
@@ -263,48 +134,174 @@ def _visible_slice(edges: np.ndarray, requested: Any) -> slice:
         return slice(0, edges.size - 1)
     cell_low = np.minimum(edges[:-1], edges[1:])
     cell_high = np.maximum(edges[:-1], edges[1:])
-    indexes = np.flatnonzero((cell_high >= low) & (cell_low <= high))
+    # Touching an outer boundary is not visibility; require positive overlap so
+    # edge-coordinate heatmaps do not acquire an extra row or column.
+    indexes = np.flatnonzero((cell_high > low) & (cell_low < high))
     if not indexes.size:
-        return slice(0, edges.size - 1)
+        # A stale viewport must never turn into a full-source raster displayed
+        # beneath unrelated zoomed axes.  Keep the result local to the nearest
+        # source cell; normally viewport translation prevents this path.
+        distance = np.maximum(cell_low - high, low - cell_high)
+        nearest = int(np.argmin(distance))
+        return slice(nearest, nearest + 1)
     return slice(int(indexes[0]), int(indexes[-1]) + 1)
 
 
-def rerasterize_heatmaps(figure: Any, viewport: dict[str, Any] | None) -> Any:
-    """Rerender attached raster heatmaps for the visible Plotly axis ranges."""
-    if not isinstance(viewport, dict) or not viewport:
-        return figure
-    for spec in getattr(figure, "_sigvue_rasterized_heatmaps", ()):
-        x_edges = _coordinate_edges(spec.x, spec.z.shape[1])
-        y_edges = _coordinate_edges(spec.y, spec.z.shape[0])
-        x_slice = _visible_slice(x_edges, viewport.get(_axis_name(spec.xref)))
-        y_slice = _visible_slice(y_edges, viewport.get(_axis_name(spec.yref)))
-        visible = spec.z[y_slice, x_slice]
-        rendered = aggregate_heatmap(
-            visible,
-            width=spec.render_width,
-            height=spec.render_height,
-            method=spec.aggregation,
-        )
-        xmin, xmax = sorted((float(x_edges[x_slice.start]), float(x_edges[x_slice.stop])))
-        ymin, ymax = sorted((float(y_edges[y_slice.start]), float(y_edges[y_slice.stop])))
-        image = figure.layout.images[spec.image_index]
-        image.source = _png_uri(
-            rendered,
-            zmin=spec.zmin,
-            zmax=spec.zmax,
-            colorscale=spec.colorscale,
-        )
-        image.x = xmin
-        image.y = ymax
-        image.sizex = xmax - xmin
-        image.sizey = ymax - ymin
-    return figure
+def _visible_coordinates(values: np.ndarray | None, cell_count: int, selected: slice) -> np.ndarray | None:
+    if values is None:
+        return None
+    if values.size == cell_count:
+        return values[selected]
+    if values.size == cell_count + 1:
+        return values[selected.start:selected.stop + 1]
+    raise ValueError("Heatmap coordinates must contain one center per cell or one more edge than cells")
+
+
+def _translated_viewport(requested: Any, current: tuple[float, float]) -> Any:
+    """Translate a requested range onto the current source bounds."""
+    if not isinstance(requested, dict):
+        return requested
+    visible = requested.get("range")
+    previous = requested.get("base")
+    if not all(isinstance(value, (list, tuple)) and len(value) >= 2 for value in (visible, previous, current)):
+        return visible
+    try:
+        visible_low, visible_high = map(float, visible[:2])
+        previous_low, previous_high = map(float, previous[:2])
+        current_low, current_high = map(float, current[:2])
+    except (TypeError, ValueError):
+        return visible
+    values = np.asarray(
+        [visible_low, visible_high, previous_low, previous_high, current_low, current_high],
+        dtype=float,
+    )
+    previous_width = previous_high - previous_low
+    if not np.all(np.isfinite(values)) or abs(previous_width) <= np.finfo(float).eps:
+        return visible
+    current_width = current_high - current_low
+    center_fraction = ((visible_low + visible_high) / 2 - previous_low) / previous_width
+    center = current_low + center_fraction * current_width
+    half_span = abs(visible_high - visible_low) / 2
+    direction = 1.0 if visible_high >= visible_low else -1.0
+    translated = [center - half_span, center + half_span]
+    allowed = sorted((current_low, current_high))
+    span = translated[1] - translated[0]
+    if span >= allowed[1] - allowed[0]:
+        translated = allowed
+    else:
+        if translated[0] < allowed[0]:
+            translated[1] += allowed[0] - translated[0]
+            translated[0] = allowed[0]
+        if translated[1] > allowed[1]:
+            translated[0] -= translated[1] - allowed[1]
+            translated[1] = allowed[1]
+    return translated if direction > 0 else translated[::-1]
+
+
+def _axis_viewport(figure: Any, viewport: dict[str, Any], axis_name: str) -> Any:
+    """Find a requested range on an axis or any Plotly-matched partner."""
+    if axis_name in viewport:
+        return viewport[axis_name]
+    target = axis_name
+    seen: set[str] = set()
+    while target not in seen:
+        seen.add(target)
+        axis = getattr(figure.layout, target, None)
+        match = getattr(axis, "matches", None)
+        if not isinstance(match, str) or not match:
+            break
+        target = _axis_name(match)
+        if target in viewport:
+            return viewport[target]
+    for candidate in figure.layout:
+        if not isinstance(candidate, str) or not candidate.startswith(axis_name[0] + "axis"):
+            continue
+        candidate_axis = getattr(figure.layout, candidate, None)
+        match = getattr(candidate_axis, "matches", None)
+        if isinstance(match, str) and _axis_name(match) in seen and candidate in viewport:
+            return viewport[candidate]
+    return None
+
+
+def add_viewport_heatmap(
+    figure: go.Figure,
+    *,
+    viewport: dict[str, Any] | None = None,
+    render_width: int = 1024,
+    render_height: int = 512,
+    aggregation: HeatmapAggregation = "mean",
+    row: int | None = None,
+    col: int | None = None,
+    **heatmap: Any,
+) -> int:
+    """Render exactly the visible source region, using native data when it fits."""
+    if render_width <= 0 or render_height <= 0:
+        raise ValueError("Heatmap render width and height must be positive")
+    if aggregation not in HEATMAP_AGGREGATIONS:
+        raise ValueError(f"Unsupported heatmap aggregation: {aggregation}")
+    trace = go.Heatmap(**heatmap)
+    source = np.asarray(trace.z)
+    if source.ndim != 2 or not source.size:
+        raise ValueError("Heatmap values must be a non-empty two-dimensional matrix")
+    x_values = np.asarray(trace.x, dtype=float) if trace.x is not None else None
+    y_values = np.asarray(trace.y, dtype=float) if trace.y is not None else None
+    x_edges = _coordinate_edges(x_values, source.shape[1])
+    y_edges = _coordinate_edges(y_values, source.shape[0])
+    if row is None and col is None:
+        figure.add_trace(trace)
+    elif row is not None and col is not None:
+        figure.add_trace(trace, row=row, col=col)
+    else:
+        raise ValueError("Heatmap subplot row and col must be supplied together")
+    trace_index = len(figure.data) - 1
+    attached = figure.data[trace_index]
+    xref, yref = attached.xaxis or "x", attached.yaxis or "y"
+    requested = viewport if isinstance(viewport, dict) else {}
+    x_request = _axis_viewport(figure, requested, _axis_name(xref))
+    y_request = _axis_viewport(figure, requested, _axis_name(yref))
+    x_bounds = (float(x_edges[0]), float(x_edges[-1]))
+    y_bounds = (float(y_edges[0]), float(y_edges[-1]))
+    x_slice = _visible_slice(x_edges, _translated_viewport(x_request, x_bounds))
+    y_slice = _visible_slice(y_edges, _translated_viewport(y_request, y_bounds))
+    visible = source[y_slice, x_slice]
+    visible_x = _visible_coordinates(x_values, source.shape[1], x_slice)
+    visible_y = _visible_coordinates(y_values, source.shape[0], y_slice)
+    attached.x = visible_x
+    attached.y = visible_y
+    attached.z = visible
+    figure._sigvue_viewport_heatmap = True
+    if visible.shape[0] <= render_height and visible.shape[1] <= render_width:
+        return trace_index
+
+    finite = source[np.isfinite(source)]
+    if finite.size == 0:
+        raise ValueError("Heatmap values must contain at least one finite value")
+    zmin = float(trace.zmin) if trace.zmin is not None else float(np.min(finite))
+    zmax = float(trace.zmax) if trace.zmax is not None else float(np.max(finite))
+    if zmax <= zmin:
+        zmax = zmin + max(1.0, abs(zmin) * 1e-9)
+    rendered = aggregate_heatmap(visible, width=render_width, height=render_height, method=aggregation)
+    xmin, xmax = sorted((float(x_edges[x_slice.start]), float(x_edges[x_slice.stop])))
+    ymin, ymax = sorted((float(y_edges[y_slice.start]), float(y_edges[y_slice.stop])))
+    figure.add_layout_image(
+        source=_png_uri(rendered, zmin=zmin, zmax=zmax, colorscale=trace.colorscale),
+        name=trace.name, xref=xref, yref=yref, x=xmin, y=ymax,
+        sizex=xmax - xmin, sizey=ymax - ymin, xanchor="left", yanchor="top",
+        sizing="stretch", opacity=1.0, layer="below",
+        visible=trace.visible is not False and trace.visible != "legendonly",
+    )
+    attached.x = [xmin + (xmax - xmin) / 4, xmax - (xmax - xmin) / 4]
+    attached.y = [ymin + (ymax - ymin) / 4, ymax - (ymax - ymin) / 4]
+    attached.z = [[zmin, zmax], [zmin, zmax]]
+    attached.opacity = 0.0
+    attached.hoverinfo = "skip"
+    attached.hovertemplate = None
+    return trace_index
 
 
 __all__ = [
     "HEATMAP_AGGREGATIONS",
     "HeatmapAggregation",
-    "RasterizedHeatmap",
+    "add_viewport_heatmap",
     "aggregate_heatmap",
-    "rerasterize_heatmaps",
 ]

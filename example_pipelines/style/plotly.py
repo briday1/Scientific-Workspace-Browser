@@ -11,6 +11,11 @@ TEAL = COLORS[0]
 ORANGE = COLORS[1]
 
 
+def heatmap_grid_color(theme: str) -> str:
+    """Return a quiet grid that remains legible without competing with heatmap data."""
+    return "rgba(169,189,194,0.13)" if theme == "dark" else "rgba(96,113,125,0.12)"
+
+
 def style_figure(figure: Any, theme: str, title: str) -> Any:
     dark = theme == "dark"
     grid = "#36515b" if dark else GRID

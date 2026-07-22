@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+import json
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
@@ -284,6 +285,8 @@ class ViewContext(ParameterContext, Protocol):
         label: str | None = None,
         group: str = "Plot styles",
     ) -> tuple[float, float]: ...
+
+    def plot_viewport(self, view_key: str) -> dict[str, object]: ...
 
     def trace_style(
         self,
@@ -679,6 +682,17 @@ class AnalysisContext:
         lower = min(maximum, max(minimum, lower))
         upper = min(maximum, max(minimum, upper))
         return (lower, upper) if lower < upper else (lower_default, upper_default)
+
+    def plot_viewport(self, view_key: str) -> dict[str, object]:
+        """Return the browser's current axis bounds for one plot view."""
+        try:
+            decoded = json.loads(str(self.values.get("__plot_viewports", "{}")))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(decoded, dict):
+            return {}
+        viewport = decoded.get(view_key, {})
+        return viewport if isinstance(viewport, dict) else {}
 
     def trace_style(
         self,

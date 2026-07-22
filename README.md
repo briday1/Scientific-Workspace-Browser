@@ -846,15 +846,18 @@ plugin data during transport. Matplotlib figures remain fully supported and are 
 PNG images. They provide a predictable CPU-rendered alternative when interactive
 Plotly navigation is unnecessary. Tabs can mix Plotly, Matplotlib, tables, and text.
 
-For dense numeric heatmaps, `RasterizedHeatmap` keeps analysis data exact while
-bounding only the number of browser-rendered pixels. It accepts normal
-`go.Heatmap` arguments and reduces each displayed pixel's complete source block
-with `max`, `mean`, or `median`; it never uses stride sampling:
+For dense numeric heatmaps, `add_viewport_heatmap` renders only the source data
+inside the browser's current axes. If that visible matrix fits within the render
+budget, it is sent unchanged as a normal Plotly heatmap. Otherwise, complete
+source blocks are reduced with `max`, `mean`, or `median`; stride sampling is
+never used:
 
 ```python
-from sigvue.plugin import RasterizedHeatmap
+from sigvue.plugin import add_viewport_heatmap
 
-raster = RasterizedHeatmap.create(
+add_viewport_heatmap(
+    figure,
+    viewport=ui.plot_viewport("waterfall"),
     x=frequency_hz,
     y=time_seconds,
     z=power_dbfs,
@@ -864,16 +867,17 @@ raster = RasterizedHeatmap.create(
     render_width=1024,
     render_height=512,
     aggregation="mean",
+    row=1,
+    col=1,
 )
-raster.add_to(figure, row=1, col=1)
 ```
 
 Declare the resolution and aggregation with presentation controls when users
 should tune them. Because they are presentation settings, changing them rerenders
-the heatmap without rerunning domain analysis. Rasterized heatmaps also rerender
-from their exact server-side source cells after a pan or zoom settles, so a
-smaller visible region progressively gains detail without sending the full matrix
-to the browser. The source matrix is never serialized as hidden client metadata.
+the heatmap without rerunning domain analysis. Each pan or zoom invokes the
+presentation callback with new axis bounds; the renderer starts from the original
+source matrix and renders only that region. It never rerasterizes a prior image
+or serializes the source matrix as hidden client metadata.
 
 Use a generic details group to keep those related controls together:
 

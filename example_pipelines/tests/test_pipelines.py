@@ -2,10 +2,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+import numpy as np
+
 from example_pipelines.comms.workspace import create_workspace as create_comms_workspace
 from example_pipelines.scripts.generate_comms import generate as generate_comms
 from example_pipelines.scripts.generate_lte import generate as generate_lte
-from example_pipelines.style import ORANGE, TEAL
+from example_pipelines.style import ORANGE, TEAL, heatmap_grid_color
 from example_pipelines.waterfall.workspace import create_workspace as create_waterfall_workspace
 
 
@@ -37,10 +39,15 @@ class ExamplePipelineTests(unittest.TestCase):
             self.assertEqual("limits", controls["dbfs_limits"].control_type)
             self.assertEqual("spectrum_style", controls["spectrum_style_color"].picker)
             self.assertEqual("toggle", controls["show_colorbar"].control_type)
+            self.assertEqual("Raster rendering", controls["render_width"].group)
             figure = opened.page.views[0].callback({})
             self.assertEqual(["scatter", "heatmap"], [trace.type for trace in figure.data])
-            self.assertEqual(figure.data[1].z.shape[0] + 1, len(figure.data[1].y))
-            self.assertEqual(tuple(figure.layout.yaxis2.range), (figure.data[1].y[0], figure.data[1].y[-1]))
+            self.assertEqual((44, 1024), np.asarray(figure.data[1].z).shape)
+            self.assertEqual(0, len(figure.layout.images))
+            self.assertEqual(heatmap_grid_color("light"), figure.layout.xaxis2.gridcolor)
+            self.assertEqual(0.35, figure.layout.xaxis2.gridwidth)
+            limited = opened.page.views[0].callback({"dbfs_limits": "-80,-30"})
+            self.assertEqual((-80.0, -30.0), (limited.data[1].zmin, limited.data[1].zmax))
 
     def test_synthetic_comms_generator_and_windowed_workspace(self):
         with TemporaryDirectory() as directory:

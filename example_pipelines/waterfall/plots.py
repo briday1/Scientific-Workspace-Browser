@@ -4,9 +4,9 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from sigvue.plugin import Presentation, ViewContext
+from sigvue.plugin import Presentation, ViewContext, add_viewport_heatmap
 
-from ..style import TEAL, style_figure
+from ..style import TEAL, heatmap_grid_color, style_figure
 from .models import WaterfallProducts
 
 
@@ -48,6 +48,19 @@ def present(products: WaterfallProducts, ui: ViewContext) -> None:
         default=True,
         group="Display",
     )
+    with ui.details_group("Raster rendering"):
+        render_width = int(ui.select(
+            "render_width", label="Heatmap render width", default=1024,
+            options=(256, 512, 1024, 2048),
+        ))
+        render_height = int(ui.select(
+            "render_height", label="Heatmap render height", default=512,
+            options=(128, 256, 512, 1024),
+        ))
+        aggregation = str(ui.select(
+            "render_aggregation", label="Heatmap aggregation", default="mean",
+            options=("max", "mean", "median"),
+        ))
     figure = make_subplots(
         rows=2,
         cols=1,
@@ -63,7 +76,9 @@ def present(products: WaterfallProducts, ui: ViewContext) -> None:
         marker=spectrum_style.plotly_marker,
         name="Average spectrum",
     ), row=1, col=1)
-    figure.add_trace(go.Heatmap(
+    add_viewport_heatmap(
+        figure,
+        viewport=ui.plot_viewport("lte-waterfall"),
         x=products.frequency_mhz,
         y=products.time_edges_ms,
         z=products.waterfall_dbfs,
@@ -72,7 +87,12 @@ def present(products: WaterfallProducts, ui: ViewContext) -> None:
         colorscale=colormap,
         showscale=show_colorbar,
         colorbar={"title": "dBFS"},
-    ), row=2, col=1)
+        render_width=render_width,
+        render_height=render_height,
+        aggregation=aggregation,
+        row=2,
+        col=1,
+    )
     figure.update_yaxes(title_text="Power (dBFS)", range=[zmin, zmax], autorange=False, row=1, col=1)
     figure.update_yaxes(
         title_text="Recording time (ms)",
@@ -81,13 +101,29 @@ def present(products: WaterfallProducts, ui: ViewContext) -> None:
         row=2,
         col=1,
     )
-    figure.update_xaxes(title_text="RF frequency (MHz)", row=2, col=1)
+    frequency_step = (
+        float(abs(products.frequency_mhz[1] - products.frequency_mhz[0]))
+        if products.frequency_mhz.size > 1 else 1.0
+    )
+    figure.update_xaxes(
+        title_text="RF frequency (MHz)",
+        range=[
+            float(products.frequency_mhz[0] - frequency_step / 2),
+            float(products.frequency_mhz[-1] + frequency_step / 2),
+        ],
+        autorange=False,
+        row=2,
+        col=1,
+    )
     figure.update_layout(uirevision=f"lte-waterfall:{products.recording.metadata_path}")
     title = str(products.recording.metadata["global"].get("core:description", "Synthetic LTE"))
     ui.stat("Sample rate", f"{products.recording.sample_rate / 1e6:g} MS/s")
     ui.stat("Center frequency", f"{products.recording.center_frequency / 1e6:g} MHz")
     with ui.tab("Spectrum + waterfall"):
-        ui.plot(style_figure(figure, ui.theme, title), key="lte-waterfall", axis_navigation="bounded")
+        styled = style_figure(figure, ui.theme, title)
+        styled.update_xaxes(gridcolor=heatmap_grid_color(ui.theme), gridwidth=0.35, row=2, col=1)
+        styled.update_yaxes(gridcolor=heatmap_grid_color(ui.theme), gridwidth=0.35, row=2, col=1)
+        ui.plot(styled, key="lte-waterfall", axis_navigation="bounded")
 
 
 class WaterfallPresentation(Presentation[WaterfallProducts]):

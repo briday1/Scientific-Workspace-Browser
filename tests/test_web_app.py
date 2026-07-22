@@ -21,7 +21,7 @@ from sigvue.plugin import (
     CapabilityChoice,
     DirectorySource,
     Presentation,
-    RasterizedHeatmap,
+    add_viewport_heatmap,
     Workspace,
 )
 from sigvue.web.application import (
@@ -82,18 +82,20 @@ class WebAppTests(unittest.TestCase):
         playback = next(view for view in page["rendered_views"] if view["name"] == "signal")["value"]
         self.assertEqual([2.0, 4.0, 6.0, 8.0], playback["data"][0]["y"])
 
-    def test_open_item_rerasterizes_heatmap_for_requested_plot_viewport(self):
+    def test_open_item_renders_only_requested_plot_viewport(self):
         class RasterPresentation(Presentation):
             def present(self, data, ui):
                 figure = go.Figure()
-                RasterizedHeatmap.create(
+                add_viewport_heatmap(
+                    figure,
+                    viewport=ui.plot_viewport("heatmap"),
                     x=np.arange(100),
                     y=np.arange(80),
                     z=np.arange(8_000, dtype=float).reshape(80, 100),
                     colorscale="Viridis",
-                    render_width=10,
-                    render_height=8,
-                ).add_to(figure)
+                    render_width=5,
+                    render_height=4,
+                )
                 figure.update_xaxes(range=[-0.5, 99.5])
                 figure.update_yaxes(range=[-0.5, 79.5])
                 with ui.tab("Heatmap"):
@@ -303,7 +305,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("function bindColormapPickers()", body)
         self.assertIn("control.option_previews", body)
         self.assertIn('class="limits-picker"', body)
-        self.assertIn("function bindLimitsPickers()", body)
+        self.assertIn("function bindLimitsPickers(onCommit)", body)
         self.assertIn('data-limit-number="lower"', body)
         self.assertIn('data-limit-number="upper"', body)
         self.assertNotIn('data-limit-range=', body)
@@ -402,24 +404,39 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("config.overview_switcher_key", body)
         self.assertIn("redrawWindowOverview?.()", body)
         self.assertIn("rememberPlotResetRanges", body)
+        self.assertIn("function managedPlotlyLayout(view)", body)
+        self.assertIn("delete layout.uirevision", body)
+        self.assertIn("managedPlotlyLayout(view),plotlyConfig", body)
         self.assertIn("plotly_relayouting", body)
         self.assertIn("plotly_relayout", body)
         self.assertIn("__plot_viewports:JSON.stringify(plotViewportPayload())", body)
+        self.assertIn("bindLimitsPickers(settingsChanged)", body)
+        self.assertIn("if(onCommit)void onCommit()", body)
+        self.assertIn("if(x.closest('[data-limits-picker]'))return", body)
         self.assertIn("view.rasterized?onViewportChanged:null", body)
-        self.assertIn("if(!plot._sigvueUpdating)onViewportChanged?.()", body)
+        self.assertIn("if(plot._sigvueUpdating||plot._sigvueResetting)return", body)
         self.assertIn("target._sigvueUpdating=true", body)
         self.assertIn("target._sigvueUpdating=false", body)
         self.assertIn("constrainPlotDuringPan", body)
         self.assertIn("view?.axis_navigation==='bounded'", body)
         self.assertIn("changedPlotResetRanges", body)
         self.assertIn("currentPlotViewport(target)", body)
-        self.assertIn("restoredPlotViewport(target,viewport)", body)
-        self.assertIn("update={...changed,...restored}", body)
-        self.assertIn("resetPlotAxes(plot)", body)
+        self.assertIn("function capturePlotViewport(plot,event)", body)
+        self.assertIn("plot._sigvueViewport=viewport", body)
+        self.assertIn("target._sigvueViewport=Object.fromEntries", body)
+        self.assertIn("restoredPlotViewport(target,viewport,previous)", body)
+        self.assertIn("translatedAxisRange", body)
+        self.assertIn("{range,base:plot._sigvueResetRanges", body)
+        self.assertIn("images=view.rasterized?{'images':view.value.layout?.images||[]}:{}", body)
+        self.assertIn("update={...changed,...restored,...images}", body)
+        self.assertIn("requestsPlotReset(event)", body)
+        self.assertIn("resetPlotAxes(plot,onViewportChanged)", body)
+        self.assertIn("plot._sigvueResetting=true", body)
+        self.assertIn("plot._sigvueResetting=false;onReset?.()", body)
         self.assertIn("return false", body)
         self.assertIn("modeBarButtonsToAdd:['select2d']", body)
         self.assertIn("modeBarButtonsToRemove:['lasso2d']", body)
-        self.assertIn("doubleClick:false", body)
+        self.assertIn("doubleClick:'reset'", body)
         self.assertIn("const scheduleCommit=()", body)
         self.assertIn("render();scheduleCommit()", body)
         self.assertIn("track.onpointerup=event=>", body)
