@@ -15,6 +15,12 @@ from sigvue.core.plugin import (
     Workspace,
 )
 from sigvue.core.page import AxisNavigation, PlaybackMode, Segment, TimeUnit
+from sigvue.rendering.heatmap import (
+    HEATMAP_AGGREGATIONS,
+    HeatmapAggregation,
+    RasterizedHeatmap,
+    aggregate_heatmap,
+)
 from sigvue.core.capabilities import (
     Annotation,
     AnnotationField,
@@ -32,6 +38,9 @@ from sigvue.core.capabilities import (
 
 __all__ = [
     "Analysis",
+    "HEATMAP_AGGREGATIONS",
+    "HeatmapAggregation",
+    "RasterizedHeatmap",
     "AxisNavigation",
     "Annotation",
     "AnnotationField",
@@ -59,4 +68,5 @@ __all__ = [
     "ViewContext",
     "Workspace",
     "TimeUnit",
+    "aggregate_heatmap",
 ]

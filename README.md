@@ -844,6 +844,33 @@ Plotly figures remain interactive and the framework does not resample or approxi
 plugin data during transport. Matplotlib figures remain fully supported and are rendered server-side as responsive
 PNG images. They provide a predictable CPU-rendered alternative when interactive
 Plotly navigation is unnecessary. Tabs can mix Plotly, Matplotlib, tables, and text.
+
+For dense numeric heatmaps, `RasterizedHeatmap` keeps analysis data exact while
+bounding only the number of browser-rendered pixels. It accepts normal
+`go.Heatmap` arguments and reduces each displayed pixel's complete source block
+with `max`, `mean`, or `median`; it never uses stride sampling:
+
+```python
+from sigvue.plugin import RasterizedHeatmap
+
+raster = RasterizedHeatmap.create(
+    x=frequency_hz,
+    y=time_seconds,
+    z=power_dbfs,
+    colorscale="Viridis",
+    zmin=-120,
+    zmax=0,
+    render_width=1024,
+    render_height=512,
+    aggregation="mean",
+)
+raster.add_to(figure, row=1, col=1)
+```
+
+Declare the resolution and aggregation with presentation controls when users
+should tune them. Because they are presentation settings, changing them rerenders
+the heatmap without rerunning domain analysis.
+
 For plots whose data bounds are also their valid navigation bounds, set
 `axis_navigation="bounded"` on `ui.plot` or `ui.view_switcher`. Sigvue derives
 the limits from the explicit Plotly axis ranges, owns pan clamping and

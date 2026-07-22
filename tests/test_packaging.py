@@ -15,6 +15,8 @@ class PackagingTests(unittest.TestCase):
         )["project"]
         runtime = tuple(project["dependencies"])
         self.assertTrue(any(value.startswith("matplotlib") for value in runtime))
+        self.assertTrue(any(value.startswith("numpy") for value in runtime))
+        self.assertTrue(any(value.startswith("pillow") for value in runtime))
         self.assertTrue(any(value.startswith("plotly") for value in runtime))
         extras = project["optional-dependencies"]
         self.assertTrue(any(value.startswith("numpy") for value in extras["examples"]))
